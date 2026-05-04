@@ -43,26 +43,37 @@ def get_currency(yf_ticker):
 # ─────────────────────────────────────────────────────────────────────────────
 _pence_cache: dict = {}
 
+# Tickers confirmed to be quoted in pence (GBp) on LSE
+# yfinance often returns 'GBP' for these incorrectly
+KNOWN_PENCE_TICKERS = {
+    "AGGG.L", "WSML.L", "BRIJ.L", "IGLN.L", "INFR.L",
+    "VUSA.L", "ISF.L", "CSPX.L", "SWLD.L", "HMWO.L",
+    "VAGP.L", "VHYL.L", "IUKD.L", "SMWP.L", "GILG.L",
+}
+
 def is_pence(yf_ticker: str) -> bool:
     t = yf_ticker.upper()
-
-    # Short-circuit: only .L tickers can ever be quoted in pence
     if not t.endswith(".L"):
         return False
-
-    # Return cached result if we've already checked this ticker
-    if t in _pence_cache:
-        return _pence_cache[t]
-
+    # Check hardcoded safelist first — yfinance is unreliable for pence detection
+    if t in KNOWN_PENCE_TICKERS:
+        return True
+    if t in pence_cache:
+        return pence_cache[t]
     try:
-        info     = yf.Ticker(yf_ticker).info
-        currency = info.get("currency", "GBp")   # default to pence if key missing
-        result   = (currency == "GBp")            # "GBp" = pence, "GBP" = pounds
+        info = yf.Ticker(yf_ticker).info
+        currency = info.get("currency", "GBp")
+        result = currency == "GBp"
+        # Fallback heuristic: if yfinance says GBP but price > 200, it's likely pence
+        if not result:
+            hist = yf.Ticker(yf_ticker).history(period="2d")
+            if not hist.empty:
+                price = float(hist["Close"].iloc[-1])
+                if price > 200:
+                    result = True
     except Exception:
-        # If yfinance call fails, assume pence — safer than double-counting pounds
-        result = True
-
-    _pence_cache[t] = result
+        result = True  # Safer default: assume pence
+    pence_cache[t] = result
     return result
 
 # ─────────────────────────────────────────────────────────────────────────────
