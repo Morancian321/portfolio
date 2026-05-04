@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: portfolio-backend
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: SHEET_ID
+        value: 1RwIupOHnln5if-hzCE-bQPfT_TW7N1_sTZcPDMelb5g
+      - key: GOOGLE_CREDENTIALS_JSON
+        sync: false

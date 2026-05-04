@@ -1,0 +1,6 @@
+flask
+flask-cors
+gspread
+yfinance
+pandas
+gunicorn
