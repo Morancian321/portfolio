@@ -10,10 +10,12 @@ import pandas as pd
 app = Flask(__name__)
 CORS(app)
 
-SHEET_ID = os.environ.get("SHEET_ID", "1RwIupOHnln5if-hzCE-bQPfT_TW7N1_sTZcPDMelb5g")
+SHEET_ID   = os.environ.get("SHEET_ID", "1RwIupOHnln5if-hzCE-bQPfT_TW7N1_sTZcPDMelb5g")
 CREDS_FILE = os.environ.get("GOOGLE_CREDENTIALS_FILE", "credentials.json")
 
+# ─────────────────────────────────────────────────────────────────────────────
 # Currency detection from yf ticker suffix
+# ─────────────────────────────────────────────────────────────────────────────
 def get_currency(yf_ticker):
     t = yf_ticker.upper()
     if t.endswith(".L"):   return "GBP"
@@ -23,10 +25,49 @@ def get_currency(yf_ticker):
     if t.endswith(".IR"):  return "EUR"
     return "USD"
 
-# LSE tickers return pence — divide by 100
-def is_pence(yf_ticker):
-    return yf_ticker.upper().endswith(".L")
+# ─────────────────────────────────────────────────────────────────────────────
+# Pence detection — robust version using yfinance currency field.
+#
+# Background: yfinance returns LSE (.L) tickers in EITHER pence (GBx) or
+# pounds (GBP) depending on the instrument. ETFs like AGGG, IGLN, WSML are
+# priced in GBP on yfinance even though they trade on LSE, while others like
+# INFR are returned in pence. The only reliable way to tell them apart is to
+# check the ticker's reported currency via yfinance .info.
+#
+# "GBp" → pence  → divide price by 100 ✓
+# "GBP" → pounds → use price as-is    ✓
+#
+# Results are cached in _pence_cache so the yfinance API is only hit once per
+# ticker per process lifetime (i.e. once per Render deploy, not once per
+# dashboard load).
+# ─────────────────────────────────────────────────────────────────────────────
+_pence_cache: dict = {}
 
+def is_pence(yf_ticker: str) -> bool:
+    t = yf_ticker.upper()
+
+    # Short-circuit: only .L tickers can ever be quoted in pence
+    if not t.endswith(".L"):
+        return False
+
+    # Return cached result if we've already checked this ticker
+    if t in _pence_cache:
+        return _pence_cache[t]
+
+    try:
+        info     = yf.Ticker(yf_ticker).info
+        currency = info.get("currency", "GBp")   # default to pence if key missing
+        result   = (currency == "GBp")            # "GBp" = pence, "GBP" = pounds
+    except Exception:
+        # If yfinance call fails, assume pence — safer than double-counting pounds
+        result = True
+
+    _pence_cache[t] = result
+    return result
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Google Sheets
+# ─────────────────────────────────────────────────────────────────────────────
 def get_sheet_data():
     creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
     if creds_json:
@@ -37,11 +78,11 @@ def get_sheet_data():
         gc = gspread.service_account(filename=tmp_path)
     else:
         gc = gspread.service_account(filename=CREDS_FILE)
-    sh = gc.open_by_key(SHEET_ID)
-    trades   = sh.worksheet("trades").get_all_records()
-    config   = sh.worksheet("portfolio_config").get_all_records()
+    sh     = gc.open_by_key(SHEET_ID)
+    trades = sh.worksheet("trades").get_all_records()
+    config = sh.worksheet("portfolio_config").get_all_records()
     try:
-        manual   = sh.worksheet("manual_prices").get_all_records()
+        manual = sh.worksheet("manual_prices").get_all_records()
     except:
         manual = []
     return trades, config, manual
@@ -56,6 +97,9 @@ def parse_config(config_rows):
         "portfolio_name":   cfg.get("portfolio_name", "Investment Portfolio"),
     }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# FX rates
+# ─────────────────────────────────────────────────────────────────────────────
 def get_fx_rates():
     rates = {"USD": 1.0}
     for pair, key in [("GBPUSD=X", "GBP"), ("EURUSD=X", "EUR")]:
@@ -67,6 +111,9 @@ def get_fx_rates():
             rates[key] = 1.0
     return rates
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Live price fetch
+# ─────────────────────────────────────────────────────────────────────────────
 def get_live_price(yf_ticker, manual_map):
     if yf_ticker in manual_map:
         return float(manual_map[yf_ticker])
@@ -78,9 +125,11 @@ def get_live_price(yf_ticker, manual_map):
         pass
     return None
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Position builder
+# ─────────────────────────────────────────────────────────────────────────────
 def build_positions(trades, fx_rates, manual_map):
     """Reconstruct open positions and closed trades from trade log."""
-    # Group by ticker
     from collections import defaultdict
     ticker_trades = defaultdict(list)
     for t in trades:
@@ -92,13 +141,13 @@ def build_positions(trades, fx_rates, manual_map):
 
     for ticker, events in ticker_trades.items():
         events_sorted = sorted(events, key=lambda x: x["date"])
-        qty_held = 0.0
+        qty_held   = 0.0
         cost_basis = 0.0
-        open_date = None
-        yf_ticker = events_sorted[0].get("yf_ticker", ticker)
+        open_date  = None
+        yf_ticker  = events_sorted[0].get("yf_ticker", ticker)
         asset_class = events_sorted[0].get("asset_class", "")
-        name = events_sorted[0].get("name", ticker)
-        direction = events_sorted[0].get("direction", "LONG")
+        name       = events_sorted[0].get("name", ticker)
+        direction  = events_sorted[0].get("direction", "LONG")
 
         for e in events_sorted:
             action = e.get("action", "").upper()
@@ -118,7 +167,7 @@ def build_positions(trades, fx_rates, manual_map):
                 qty_held   += qty
 
             elif action == "REDUCE":
-                avg = cost_basis / qty_held if qty_held else price
+                avg      = cost_basis / qty_held if qty_held else price
                 realised = (price - avg) * qty
                 cost_basis -= avg * qty
                 qty_held   -= qty
@@ -131,16 +180,15 @@ def build_positions(trades, fx_rates, manual_map):
                 })
 
             elif action == "CLOSE":
-                avg = cost_basis / qty_held if qty_held else price
+                avg      = cost_basis / qty_held if qty_held else price
                 realised = (price - avg) * qty_held
 
-                # Convert to USD
                 currency = get_currency(yf_ticker)
                 pence    = is_pence(yf_ticker)
                 fx       = fx_rates.get(currency, 1.0)
                 if pence:
-                    avg      /= 100
-                    price    /= 100
+                    avg   /= 100
+                    price /= 100
                 realised_usd = realised * fx
 
                 closed_trades.append({
@@ -155,7 +203,6 @@ def build_positions(trades, fx_rates, manual_map):
                 cost_basis = 0.0
 
         if qty_held > 0:
-            # Still open
             live_price = get_live_price(yf_ticker, manual_map)
             currency   = get_currency(yf_ticker)
             pence      = is_pence(yf_ticker)
@@ -164,16 +211,16 @@ def build_positions(trades, fx_rates, manual_map):
             avg_price = cost_basis / qty_held
 
             if live_price is not None:
-                lp = live_price / 100 if pence else live_price
-                ap = avg_price / 100  if pence else avg_price
+                lp         = live_price / 100 if pence else live_price
+                ap         = avg_price  / 100 if pence else avg_price
                 mv_local   = lp * qty_held
                 cost_usd   = ap * qty_held * fx
                 mv_usd     = mv_local * fx
                 unreal_pnl = mv_usd - cost_usd
                 unreal_pct = (lp - ap) / ap if ap else 0
             else:
-                lp = avg_price / 100 if pence else avg_price
-                ap = lp
+                lp         = avg_price / 100 if pence else avg_price
+                ap         = lp
                 mv_usd     = ap * qty_held * fx
                 cost_usd   = mv_usd
                 unreal_pnl = 0
@@ -198,21 +245,23 @@ def build_positions(trades, fx_rates, manual_map):
 
     return open_positions, closed_trades
 
+# ─────────────────────────────────────────────────────────────────────────────
+# NAV curve builder
+# ─────────────────────────────────────────────────────────────────────────────
 def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
     """Reconstruct daily NAV from inception using yfinance historical prices."""
     inception = datetime.strptime(cfg["inception_date"], "%Y-%m-%d")
     today     = datetime.today()
     starting  = cfg["starting_capital"]
 
-    # Collect all unique yf tickers
     ticker_map = {}
     for t in trades:
         if t.get("yf_ticker") and t.get("ticker"):
             ticker_map[t["ticker"]] = t.get("yf_ticker")
 
-    # Fetch historical prices for all tickers + FX + benchmark
     all_tickers = list(set(ticker_map.values())) + ["GBPUSD=X", "EURUSD=X", benchmark_ticker]
-    raw = yf.download(all_tickers, start=inception.strftime("%Y-%m-%d"),
+    raw = yf.download(all_tickers,
+                      start=inception.strftime("%Y-%m-%d"),
                       end=(today + timedelta(days=1)).strftime("%Y-%m-%d"),
                       auto_adjust=True, progress=False)
 
@@ -223,17 +272,15 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
 
     prices = prices.ffill().bfill()
 
-    # Build daily snapshots
     from collections import defaultdict
     events_by_date = defaultdict(list)
     for t in trades:
         events_by_date[t["date"]].append(t)
 
-    holdings = {}  # ticker -> {qty, cost, yf_ticker}
-    cash = starting
-    nav_series = []
+    holdings    = {}
+    cash        = starting
+    nav_series  = []
     bench_series = []
-
     bench_start = None
 
     date_range = pd.bdate_range(start=inception, end=today)
@@ -241,14 +288,13 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
     for dt in date_range:
         ds = dt.strftime("%Y-%m-%d")
 
-        # Process any trades on this date
         for e in events_by_date.get(ds, []):
             tk     = e["ticker"]
             qty    = float(e.get("quantity", 0))
             price  = float(e.get("price", 0))
             action = e.get("action", "").upper()
             ytk    = e.get("yf_ticker", tk)
-            pence  = is_pence(ytk)
+            pence    = is_pence(ytk)
             currency = get_currency(ytk)
             fx_r   = fx_rates.get(currency, 1.0)
             p_usd  = (price / 100 if pence else price) * fx_r
@@ -271,27 +317,25 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
                     else:
                         holdings[tk]["qty"] -= close_qty
 
-        # Calculate portfolio value on this date
         port_val = cash
         for tk, h in holdings.items():
-            ytk    = h["yf_ticker"]
-            pence  = is_pence(ytk)
+            ytk      = h["yf_ticker"]
+            pence    = is_pence(ytk)
             currency = get_currency(ytk)
-            fx_r   = fx_rates.get(currency, 1.0)
+            fx_r     = fx_rates.get(currency, 1.0)
             try:
                 col = ytk
                 if col in prices.columns:
-                    p = float(prices.loc[:dt, col].iloc[-1])
+                    p     = float(prices.loc[:dt, col].iloc[-1])
                     p_usd = (p / 100 if pence else p) * fx_r
                     port_val += p_usd * h["qty"]
                 else:
-                    port_val += h["qty"]  # fallback
+                    port_val += h["qty"]
             except:
                 pass
 
         nav_series.append({"date": ds, "value": round(port_val, 2)})
 
-        # Benchmark
         try:
             if benchmark_ticker in prices.columns:
                 bp = float(prices.loc[:dt, benchmark_ticker].iloc[-1])
@@ -304,19 +348,22 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
 
     return nav_series, bench_series
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Metrics
+# ─────────────────────────────────────────────────────────────────────────────
 def calc_metrics(nav_series, starting_capital):
     if len(nav_series) < 2:
         return {}
-    values = [x["value"] for x in nav_series]
+    values        = [x["value"] for x in nav_series]
     daily_returns = [(values[i] - values[i-1]) / values[i-1] for i in range(1, len(values))]
 
     import math
-    mean_r = sum(daily_returns) / len(daily_returns)
+    mean_r   = sum(daily_returns) / len(daily_returns)
     variance = sum((r - mean_r)**2 for r in daily_returns) / len(daily_returns)
-    std_r = math.sqrt(variance)
-    sharpe = (mean_r / std_r * math.sqrt(252)) if std_r > 0 else 0
+    std_r    = math.sqrt(variance)
+    sharpe   = (mean_r / std_r * math.sqrt(252)) if std_r > 0 else 0
 
-    peak = values[0]
+    peak   = values[0]
     max_dd = 0
     for v in values:
         if v > peak:
@@ -335,6 +382,9 @@ def calc_metrics(nav_series, starting_capital):
         "total_pnl":        round(values[-1] - starting_capital, 2),
     }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Routes
+# ─────────────────────────────────────────────────────────────────────────────
 @app.route("/api/portfolio")
 def portfolio():
     try:
@@ -345,43 +395,39 @@ def portfolio():
 
         open_pos, closed = build_positions(trades, fx_rates, manual_map)
 
-        total_mv    = sum(p["mv_usd"] for p in open_pos)
-        total_cost  = sum(p["cost_usd"] for p in open_pos)
-        cash        = cfg["starting_capital"] - total_cost
-        total_val   = total_mv + max(cash, 0)
+        total_mv   = sum(p["mv_usd"]   for p in open_pos)
+        total_cost = sum(p["cost_usd"] for p in open_pos)
+        cash       = cfg["starting_capital"] - total_cost
+        total_val  = total_mv + max(cash, 0)
 
-        # Weights
         for p in open_pos:
             p["weight_pct"] = round(p["mv_usd"] / total_val * 100, 2) if total_val else 0
 
-        # Asset class breakdown
         alloc = {}
         for p in open_pos:
             ac = p["asset_class"]
             alloc[ac] = round(alloc.get(ac, 0) + p["mv_usd"] / total_val * 100, 2)
 
-        nav_series, bench_series = build_nav_curve(
-            trades, fx_rates, cfg, cfg["benchmark"]
-        )
+        nav_series, bench_series = build_nav_curve(trades, fx_rates, cfg, cfg["benchmark"])
         metrics = calc_metrics(nav_series, cfg["starting_capital"])
 
         realised_total = sum(t.get("realised_pnl_usd", 0) for t in closed)
 
         return jsonify({
-            "portfolio_name":    cfg["portfolio_name"],
-            "inception_date":    cfg["inception_date"],
-            "benchmark":         cfg["benchmark"],
-            "starting_capital":  cfg["starting_capital"],
-            "current_value":     round(total_val, 2),
-            "total_pnl":         round(total_mv - total_cost + realised_total, 2),
-            "cash":              round(max(cash, 0), 2),
-            "metrics":           metrics,
-            "open_positions":    open_pos,
-            "closed_trades":     closed,
-            "allocation":        alloc,
-            "nav_series":        nav_series,
-            "benchmark_series":  bench_series,
-            "fx_rates":          fx_rates,
+            "portfolio_name":   cfg["portfolio_name"],
+            "inception_date":   cfg["inception_date"],
+            "benchmark":        cfg["benchmark"],
+            "starting_capital": cfg["starting_capital"],
+            "current_value":    round(total_val, 2),
+            "total_pnl":        round(total_mv - total_cost + realised_total, 2),
+            "cash":             round(max(cash, 0), 2),
+            "metrics":          metrics,
+            "open_positions":   open_pos,
+            "closed_trades":    closed,
+            "allocation":       alloc,
+            "nav_series":       nav_series,
+            "benchmark_series": bench_series,
+            "fx_rates":         fx_rates,
         })
     except Exception as e:
         import traceback
@@ -390,6 +436,7 @@ def portfolio():
 @app.route("/health")
 def health():
     return jsonify({"status": "ok"})
+
 from flask import send_from_directory
 
 @app.route("/")
