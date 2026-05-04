@@ -223,7 +223,7 @@ def build_positions(trades, fx_rates, manual_map):
 
             if live_price is not None:
                 lp         = live_price / 100 if pence else live_price
-                ap         = avg_price  / 100 if pence else avg_price
+                ap         = avg_price 
                 mv_local   = lp * qty_held
                 cost_usd   = ap * qty_held * fx
                 mv_usd     = mv_local * fx
@@ -243,7 +243,7 @@ def build_positions(trades, fx_rates, manual_map):
                 "asset_class": asset_class,
                 "direction":   direction,
                 "quantity":    qty_held,
-                "avg_price":   round(avg_price / 100 if pence else avg_price, 4),
+                "avg_price":   round(avg_price, 4),
                 "live_price":  round(lp, 4) if live_price else None,
                 "currency":    currency,
                 "mv_usd":      round(mv_usd, 2),
@@ -308,7 +308,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
             pence    = is_pence(ytk)
             currency = get_currency(ytk)
             fx_r   = fx_rates.get(currency, 1.0)
-            p_usd  = (price / 100 if pence else price) * fx_r
+            p_usd  = price * fx_r
 
             if action == "OPEN":
                 holdings[tk] = {"qty": qty, "yf_ticker": ytk}
