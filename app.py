@@ -43,38 +43,34 @@ def get_currency(yf_ticker):
 # ─────────────────────────────────────────────────────────────────────────────
 _pence_cache: dict = {}
 
-# Tickers confirmed to be quoted in pence (GBp) on LSE
-# yfinance often returns 'GBP' for these incorrectly
-KNOWN_PENCE_TICKERS = {
-    "AGGG.L", "WSML.L", "BRIJ.L", "IGLN.L", "INFR.L",
-    "VUSA.L", "ISF.L", "CSPX.L", "SWLD.L", "HMWO.L",
-    "VAGP.L", "VHYL.L", "IUKD.L", "SMWP.L", "GILG.L",
-}
-
+import logging
 def is_pence(yf_ticker: str) -> bool:
+    """
+    Returns True if the ticker is quoted in pence (GBp) according to yfinance .info['currency'].
+    Logs a warning if currency cannot be determined.
+    """
     t = yf_ticker.upper()
     if not t.endswith(".L"):
         return False
-    # Check hardcoded safelist first — yfinance is unreliable for pence detection
-    if t in KNOWN_PENCE_TICKERS:
-        return True
-    if t in pence_cache:
-        return pence_cache[t]
+    if t in _pence_cache:
+        return _pence_cache[t]
     try:
         info = yf.Ticker(yf_ticker).info
-        currency = info.get("currency", "GBp")
-        result = currency == "GBp"
-        # Fallback heuristic: if yfinance says GBP but price > 200, it's likely pence
-        if not result:
-            hist = yf.Ticker(yf_ticker).history(period="2d")
-            if not hist.empty:
-                price = float(hist["Close"].iloc[-1])
-                if price > 200:
-                    result = True
-    except Exception:
-        result = True  # Safer default: assume pence
-    pence_cache[t] = result
-    return result
+        currency = info.get("currency", None)
+        if currency == "GBp":
+            _pence_cache[t] = True
+            return True
+        elif currency == "GBP":
+            _pence_cache[t] = False
+            return False
+        else:
+            logging.warning(f"Ambiguous currency for {yf_ticker}: {currency}. Assuming GBP (no pence conversion).")
+            _pence_cache[t] = False
+            return False
+    except Exception as e:
+        logging.warning(f"Could not determine currency for {yf_ticker}: {e}. Assuming GBP (no pence conversion).")
+        _pence_cache[t] = False
+        return False
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Google Sheets
@@ -131,7 +127,10 @@ def get_live_price(yf_ticker, manual_map):
     try:
         h = yf.Ticker(yf_ticker).history(period="2d")
         if not h.empty:
-            return float(h["Close"].iloc[-1])
+            price = float(h["Close"].iloc[-1])
+            if is_pence(yf_ticker):
+                return price / 100
+            return price
     except:
         pass
     return None
@@ -222,18 +221,18 @@ def build_positions(trades, fx_rates, manual_map):
             avg_price = cost_basis / qty_held
 
             if live_price is not None:
-                lp         = live_price / 100 if pence else live_price
-                ap         = avg_price 
-                mv_local   = lp * qty_held
-                cost_usd   = ap * qty_held * fx
-                mv_usd     = mv_local * fx
+                lp = live_price
+                ap = avg_price / 100 if pence else avg_price
+                mv_local = lp * qty_held
+                cost_usd = ap * qty_held * fx
+                mv_usd = mv_local * fx
                 unreal_pnl = mv_usd - cost_usd
                 unreal_pct = (lp - ap) / ap if ap else 0
             else:
-                lp         = avg_price / 100 if pence else avg_price
-                ap         = lp
-                mv_usd     = ap * qty_held * fx
-                cost_usd   = mv_usd
+                lp = avg_price / 100 if pence else avg_price
+                ap = lp
+                mv_usd = ap * qty_held * fx
+                cost_usd = mv_usd
                 unreal_pnl = 0
                 unreal_pct = 0
 
@@ -308,7 +307,8 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
             pence    = is_pence(ytk)
             currency = get_currency(ytk)
             fx_r   = fx_rates.get(currency, 1.0)
-            p_usd  = price * fx_r
+            price_adj = price / 100 if pence else price
+            p_usd  = price_adj * fx_r
 
             if action == "OPEN":
                 holdings[tk] = {"qty": qty, "yf_ticker": ytk}
@@ -338,7 +338,8 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
                 col = ytk
                 if col in prices.columns:
                     p     = float(prices.loc[:dt, col].iloc[-1])
-                    p_usd = (p / 100 if pence else p) * fx_r
+                    p_adj = p / 100 if pence else p
+                    p_usd = p_adj * fx_r
                     port_val += p_usd * h["qty"]
                 else:
                     port_val += h["qty"]
