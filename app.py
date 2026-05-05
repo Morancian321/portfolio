@@ -158,7 +158,8 @@ def build_positions(trades, fx_rates, manual_map):
         asset_class = events_sorted[0].get("asset_class", "")
         name       = events_sorted[0].get("name", ticker)
         direction  = events_sorted[0].get("direction", "LONG")
-
+        currency_override = events_sorted[0].get('currency_override', '').strip().upper()
+       
         for e in events_sorted:
             action = e.get("action", "").upper()
             qty    = float(e.get("quantity", 0))
@@ -193,9 +194,10 @@ def build_positions(trades, fx_rates, manual_map):
                 avg      = cost_basis / qty_held if qty_held else price
                 realised = (price - avg) * qty_held
 
-                currency = get_currency(yf_ticker)
-                pence    = is_pence(yf_ticker)
-                fx       = fx_rates.get(currency, 1.0)
+                currency = currency_override if currency_override else get_currency(yf_ticker)
+                pence = is_pence(yf_ticker) if not currency_override else False
+                fx = fx_rates.get(currency, 1.0)
+
                 if pence:
                     avg   /= 100
                     price /= 100
@@ -214,9 +216,9 @@ def build_positions(trades, fx_rates, manual_map):
 
         if qty_held > 0:
             live_price = get_live_price(yf_ticker, manual_map)
-            currency   = get_currency(yf_ticker)
-            pence      = is_pence(yf_ticker)
-            fx         = fx_rates.get(currency, 1.0)
+            currency = currency_override if currency_override else get_currency(yf_ticker)
+            pence = is_pence(yf_ticker) if not currency_override else False
+            fx = fx_rates.get(currency, 1.0)
 
             avg_price = cost_basis / qty_held
 
@@ -308,21 +310,22 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
             price  = float(e.get("price", 0))
             action = e.get("action", "").upper()
             ytk    = e.get("yf_ticker", tk)
-            pence    = is_pence(ytk)
-            currency = get_currency(ytk)
-            fx_r   = fx_rates.get(currency, 1.0)
+            currency_override = e.get('currency_override', '').strip().upper()
+            currency = currency_override if currency_override else get_currency(ytk)
+            pence    = is_pence(ytk) if not currency_override else False
+            fx_r     = fx_rates.get(currency, 1.0)
             price_adj = price / 100 if pence else price
             p_usd  = price_adj * fx_r
 
             if action == "OPEN":
-                holdings[tk] = {"qty": qty, "yf_ticker": ytk}
-                cash -= p_usd * qty
+               holdings[tk] = {"qty": qty, "yf_ticker": ytk, "currency_override": currency_override}
+               cash -= p_usd * qty
             elif action == "ADD":
-                if tk in holdings:
-                    holdings[tk]["qty"] += qty
-                else:
-                    holdings[tk] = {"qty": qty, "yf_ticker": ytk}
-                cash -= p_usd * qty
+               if tk in holdings:
+                  holdings[tk]["qty"] += qty
+               else:
+                  holdings[tk] = {"qty": qty, "yf_ticker": ytk, "currency_override": currency_override}
+               cash -= p_usd * qty
             elif action in ("REDUCE", "CLOSE"):
                 if tk in holdings:
                     close_qty = qty if action == "REDUCE" else holdings[tk]["qty"]
@@ -334,10 +337,11 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
 
         port_val = cash
         for tk, h in holdings.items():
-            ytk      = h["yf_ticker"]
-            pence    = is_pence(ytk)
-            currency = get_currency(ytk)
-            fx_r     = fx_rates.get(currency, 1.0)
+        ytk               = h["yf_ticker"]
+        currency_override = h.get("currency_override", "").strip().upper()
+        currency          = currency_override if currency_override else get_currency(ytk)
+        pence             = is_pence(ytk) if not currency_override else False
+        fx_r              = fx_rates.get(currency, 1.0)
             try:
                 col = ytk
                 if col in prices.columns:
