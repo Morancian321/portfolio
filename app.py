@@ -221,15 +221,15 @@ def build_positions(trades, fx_rates, manual_map):
             avg_price = cost_basis / qty_held
 
             if live_price is not None:
-                lp = live_price
-                ap = avg_price / 100 if pence else avg_price
+                lp = live_price  # already in pounds if pence, due to get_live_price
+                ap = avg_price   # also in pounds, do NOT divide by 100
                 mv_local = lp * qty_held
                 cost_usd = ap * qty_held * fx
                 mv_usd = mv_local * fx
                 unreal_pnl = mv_usd - cost_usd
                 unreal_pct = (lp - ap) / ap if ap else 0
             else:
-                lp = avg_price / 100 if pence else avg_price
+                lp = avg_price  # already in pounds if pence
                 ap = lp
                 mv_usd = ap * qty_held * fx
                 cost_usd = mv_usd
