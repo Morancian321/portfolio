@@ -6,28 +6,7 @@ from flask_cors import CORS
 import gspread
 import yfinance as yf
 import pandas as pd
-import math
-import numpy as np
 
-def sanitise(obj):
-    """Recursively replace NaN/Inf/numpy types with JSON-safe values."""
-    if isinstance(obj, float):
-        if math.isnan(obj) or math.isinf(obj):
-            return None
-        return obj
-    if isinstance(obj, (np.floating, np.integer)):
-        v = float(obj)
-        if math.isnan(v) or math.isinf(v):
-            return None
-        return v
-    if isinstance(obj, np.ndarray):
-        return [sanitise(i) for i in obj.tolist()]
-    if isinstance(obj, dict):
-        return {k: sanitise(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [sanitise(i) for i in obj]
-    return obj
-    
 app = Flask(__name__)
 CORS(app)
 
@@ -304,12 +283,9 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
 
     if isinstance(raw.columns, pd.MultiIndex):
         prices = raw["Close"]
-        if isinstance(prices, pd.Series):
-            prices = prices.to_frame()
     else:
         prices = raw[["Close"]] if "Close" in raw.columns else raw
 
-    prices = prices.dropna(axis=1, how="all")
     prices = prices.ffill().bfill()
 
     from collections import defaultdict
@@ -361,11 +337,11 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
 
         port_val = cash
         for tk, h in holdings.items():
-            ytk               = h["yf_ticker"]
-            currency_override = h.get("currency_override", "").strip().upper()
-            currency          = currency_override if currency_override else get_currency(ytk)
-            pence             = is_pence(ytk) if not currency_override else False
-            fx_r              = fx_rates.get(currency, 1.0)
+        ytk               = h["yf_ticker"]
+        currency_override = h.get("currency_override", "").strip().upper()
+        currency          = currency_override if currency_override else get_currency(ytk)
+        pence             = is_pence(ytk) if not currency_override else False
+        fx_r              = fx_rates.get(currency, 1.0)
             try:
                 col = ytk
                 if col in prices.columns:
@@ -441,10 +417,7 @@ def portfolio():
 
         total_mv   = sum(p["mv_usd"]   for p in open_pos)
         total_cost = sum(p["cost_usd"] for p in open_pos)
-        realised_proceeds = sum(
-            t.get("exit_price", 0) * t.get("qty", 0)
-            for t in closed)
-        cash = cfg["starting_capital"] - total_cost + realised_proceeds
+        cash       = cfg["starting_capital"] - total_cost
         total_val  = total_mv + max(cash, 0)
 
         for p in open_pos:
@@ -460,7 +433,7 @@ def portfolio():
 
         realised_total = sum(t.get("realised_pnl_usd", 0) for t in closed)
 
-        return jsonify(sanitise({
+        return jsonify({
             "portfolio_name":   cfg["portfolio_name"],
             "inception_date":   cfg["inception_date"],
             "benchmark":        cfg["benchmark"],
