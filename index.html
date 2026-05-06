@@ -394,8 +394,8 @@ function render(d) {
       <td><span class="badge ${badgeClass(p.asset_class)}">${p.asset_class}</span></td>
       <td>${p.direction}</td>
       <td>${p.quantity.toLocaleString()}</td>
-      <td>${p.avg_price != null ? p.avg_price.toLocaleString() : '—'}</td>
-      <td>${p.live_price != null ? p.live_price.toLocaleString() : '—'}</td>
+      <td>${p.avg_price != null ? p.avg_price.toLocaleString() + ' ' + (p.currency || '') : '—'}</td>
+      <td>${p.live_price != null ? p.live_price.toLocaleString() + ' ' + (p.currency || '') : '—'}</td>
       <td>${fmt(p.mv_usd, 0)}</td>
       <td class="${pnlClass}">${fmt(p.unreal_pnl, 0)} (${fmtPct(p.unreal_pct)})</td>
       <td>${p.weight_pct != null ? p.weight_pct.toFixed(1)+'%' : '—'}</td>
