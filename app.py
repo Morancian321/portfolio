@@ -7,13 +7,21 @@ import gspread
 import yfinance as yf
 import pandas as pd
 import math
+import numpy as np
 
 def sanitise(obj):
-    """Recursively replace NaN/Inf with None so JSON serialises cleanly."""
+    """Recursively replace NaN/Inf/numpy types with JSON-safe values."""
     if isinstance(obj, float):
         if math.isnan(obj) or math.isinf(obj):
             return None
         return obj
+    if isinstance(obj, (np.floating, np.integer)):
+        v = float(obj)
+        if math.isnan(v) or math.isinf(v):
+            return None
+        return v
+    if isinstance(obj, np.ndarray):
+        return [sanitise(i) for i in obj.tolist()]
     if isinstance(obj, dict):
         return {k: sanitise(v) for k, v in obj.items()}
     if isinstance(obj, list):
