@@ -337,11 +337,11 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
 
         port_val = cash
         for tk, h in holdings.items():
-        ytk               = h["yf_ticker"]
-        currency_override = h.get("currency_override", "").strip().upper()
-        currency          = currency_override if currency_override else get_currency(ytk)
-        pence             = is_pence(ytk) if not currency_override else False
-        fx_r              = fx_rates.get(currency, 1.0)
+            ytk               = h["yf_ticker"]
+            currency_override = h.get("currency_override", "").strip().upper()
+            currency          = currency_override if currency_override else get_currency(ytk)
+            pence             = is_pence(ytk) if not currency_override else False
+            fx_r              = fx_rates.get(currency, 1.0)
             try:
                 col = ytk
                 if col in prices.columns:
