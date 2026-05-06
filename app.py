@@ -452,7 +452,7 @@ def portfolio():
 
         realised_total = sum(t.get("realised_pnl_usd", 0) for t in closed)
 
-        return jsonify({
+        return jsonify(sanitise({
             "portfolio_name":   cfg["portfolio_name"],
             "inception_date":   cfg["inception_date"],
             "benchmark":        cfg["benchmark"],
