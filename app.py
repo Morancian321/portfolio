@@ -6,7 +6,20 @@ from flask_cors import CORS
 import gspread
 import yfinance as yf
 import pandas as pd
+import math
 
+def sanitise(obj):
+    """Recursively replace NaN/Inf with None so JSON serialises cleanly."""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: sanitise(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [sanitise(i) for i in obj]
+    return obj
+    
 app = Flask(__name__)
 CORS(app)
 
