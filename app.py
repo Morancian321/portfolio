@@ -283,9 +283,12 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
 
     if isinstance(raw.columns, pd.MultiIndex):
         prices = raw["Close"]
+        if isinstance(prices, pd.Series):
+            prices = prices.to_frame()
     else:
         prices = raw[["Close"]] if "Close" in raw.columns else raw
 
+    prices = prices.dropna(axis=1, how="all")
     prices = prices.ffill().bfill()
 
     from collections import defaultdict
@@ -417,7 +420,10 @@ def portfolio():
 
         total_mv   = sum(p["mv_usd"]   for p in open_pos)
         total_cost = sum(p["cost_usd"] for p in open_pos)
-        cash       = cfg["starting_capital"] - total_cost
+        realised_proceeds = sum(
+            t.get("exit_price", 0) * t.get("qty", 0)
+            for t in closed)
+        cash = cfg["starting_capital"] - total_cost + realised_proceeds
         total_val  = total_mv + max(cash, 0)
 
         for p in open_pos:
