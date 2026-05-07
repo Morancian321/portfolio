@@ -177,7 +177,7 @@ def build_positions(trades, fx_rates, manual_map):
                 lp = live_price / 100 if pence else live_price
                 ap = avg_price / 100  if pence else avg_price
                 cost_usd   = ap * qty_held * effective_fx
-                mv_usd     = mv_local * effective_fx
+                mv_usd     = lp * qty_held * effective_fx
                 unreal_pnl = mv_usd - cost_usd
                 unreal_pct = (lp - ap) / ap if ap else 0
             else:
