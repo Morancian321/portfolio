@@ -118,7 +118,6 @@ main{padding-block:2rem}
 .tt-row+.tt-row{border-top:1px solid color-mix(in oklch,var(--color-divider) 60%,transparent)}
 .tt-key{font-size:.72rem;color:var(--color-text-muted);flex-shrink:0}
 .tt-val{font-size:.78rem;font-weight:600;color:var(--color-text);text-align:right;font-variant-numeric:tabular-nums}
-.tt-formula{margin-top:.65rem;padding-top:.55rem;border-top:1px solid var(--color-divider);font-size:.68rem;color:var(--color-text-muted);line-height:1.5;font-family:monospace}
 .tt-note{margin-top:.55rem;font-size:.67rem;color:var(--color-text-faint);line-height:1.4;font-style:italic}
 
 /* Sharpe comparison */
@@ -247,7 +246,6 @@ footer{border-top:1px solid var(--color-border);padding-block:1.5rem;margin-top:
               <span class="tt-key">Annualisation</span>
               <span class="tt-val">√252 × daily ratio</span>
             </div>
-            <div class="tt-formula">(mean daily return − Rf/252)<br>────────────────────────── × √252<br>std dev of daily returns</div>
             <div class="tt-note" id="ttNote">—</div>
           </div>
         </div>
@@ -380,7 +378,6 @@ function render(d) {
   pnlPctEl.textContent = fmtPct(m.total_return_pct);
   pnlPctEl.className = 'kpi-delta ' + (pnl >= 0 ? 'up' : 'down');
 
-  // Sharpe + benchmark comparison
   const portSharpe = m.Sharpe_ratio;
   const benchSharpe = d.bench_sharpe;
   const benchName = d.benchmark || 'SPY';
@@ -408,7 +405,7 @@ function render(d) {
   }
 
   // Populate tooltip fields
-  const rfRate = d.rf_rate;  // already in % e.g. 4.320
+  const rfRate = d.rf_rate;
   const navSeries = d.nav_series || [];
   const nDays = navSeries.length;
   const inceptionDate = d.inception_date || '—';
@@ -418,7 +415,6 @@ function render(d) {
   document.getElementById('ttPeriod').textContent = nDays > 0 ? inceptionDate + ' → ' + today : '—';
   document.getElementById('ttDays').textContent = nDays > 0 ? nDays + ' trading days' : '—';
 
-  // Reliability note based on sample size
   let note = '';
   if (nDays < 63) {
     note = '⚠ < 3 months of data — Sharpe is highly unreliable at this sample size.';
