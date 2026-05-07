@@ -77,6 +77,17 @@ def get_fx_rates():
             rates[key] = 1.0
     return rates
 
+def get_risk_free_rate():
+    """Fetch annualised risk-free rate from 13-week US T-bill yield (^IRX).
+    ^IRX is quoted as a percentage, e.g. 4.32 means 4.32%, so divide by 100."""
+    try:
+        h = yf.Ticker("^IRX").history(period="5d")
+        if not h.empty:
+            return float(h["Close"].iloc[-1]) / 100
+    except:
+        pass
+    return 0.043  # fallback if yfinance unavailable
+
 def get_live_price(yf_ticker, manual_map):
     if yf_ticker in manual_map:
         return float(manual_map[yf_ticker])
@@ -342,17 +353,19 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
 
     return nav_series, bench_series
 
-def calc_metrics(nav_series, starting_capital):
+def calc_metrics(nav_series, starting_capital, rf_annual=0.043):
     if len(nav_series) < 2:
         return {}
     values = [x["value"] for x in nav_series]
     daily_returns = [(values[i] - values[i-1]) / values[i-1] for i in range(1, len(values))]
 
     import math
-    mean_r = sum(daily_returns) / len(daily_returns)
-    variance = sum((r - mean_r)**2 for r in daily_returns) / len(daily_returns)
+    n = len(daily_returns)
+    mean_r = sum(daily_returns) / n
+    rf_daily = rf_annual / 252
+    variance = sum((r - mean_r)**2 for r in daily_returns) / (n - 1)
     std_r = math.sqrt(variance)
-    Sharpe = (mean_r / std_r * math.sqrt(252)) if std_r > 0 else 0
+    Sharpe = ((mean_r - rf_daily) / std_r * math.sqrt(252)) if std_r > 0 else 0
 
     peak = values[0]
     max_dd = 0
@@ -379,6 +392,7 @@ def portfolio():
         trades, config_rows, manual_rows = get_sheet_data()
         cfg        = parse_config(config_rows)
         fx_rates   = get_fx_rates()
+        rf_rate    = get_risk_free_rate()
         manual_map = {r["ticker"]: r["manual_price"] for r in manual_rows if r.get("ticker")}
 
         open_pos, closed = build_positions(trades, fx_rates, manual_map)
@@ -404,7 +418,7 @@ def portfolio():
         nav_series, bench_series = build_nav_curve(
             trades, fx_rates, cfg, cfg["benchmark"]
         )
-        metrics = calc_metrics(nav_series, cfg["starting_capital"])
+        metrics = calc_metrics(nav_series, cfg["starting_capital"], rf_annual=rf_rate)
 
         realised_total = sum(t.get("realised_pnl_usd", 0) for t in closed)
 
@@ -417,6 +431,7 @@ def portfolio():
             "total_pnl":         round(total_mv - total_cost + realised_total, 2),
             "cash":              round(max(cash, 0), 2),
             "metrics":           metrics,
+            "rf_rate":           round(rf_rate * 100, 3),
             "open_positions":    open_pos,
             "closed_trades":     closed,
             "allocation":        alloc,
