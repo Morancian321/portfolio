@@ -78,6 +78,13 @@ def get_live_price(yf_ticker, manual_map):
         pass
     return None
 
+def _is_tv_no_fx(trade_row):
+    """Returns True if tv_no_fx=TRUE in the sheet.
+    TradingView treats these positions as if the GBP price were in USD
+    (no GBP->USD conversion). We skip FX here to match broker values."""
+    val = str(trade_row.get("tv_no_fx", "")).strip().upper()
+    return val in ("TRUE", "1", "YES")
+    
 def build_positions(trades, fx_rates, manual_map):
     """Reconstruct open positions and closed trades from trade log."""
     # Group by ticker
@@ -99,7 +106,8 @@ def build_positions(trades, fx_rates, manual_map):
         asset_class = events_sorted[0].get("asset_class", "")
         name = events_sorted[0].get("name", ticker)
         direction = events_sorted[0].get("direction", "LONG")
-
+        tv_no_fx = False
+        
         for e in events_sorted:
             action = e.get("action", "").upper()
             qty    = float(e.get("quantity", 0))
@@ -112,6 +120,7 @@ def build_positions(trades, fx_rates, manual_map):
                 yf_ticker   = e.get("yf_ticker", yf_ticker)
                 asset_class = e.get("asset_class", asset_class)
                 name        = e.get("name", name)
+                tv_no_fx    = _is_tv_no_fx(e)
 
             elif action == "ADD":
                 cost_basis += price * qty
@@ -160,21 +169,21 @@ def build_positions(trades, fx_rates, manual_map):
             currency   = get_currency(yf_ticker)
             pence      = is_pence(yf_ticker)
             fx         = fx_rates.get(currency, 1.0)
-
+            effective_fx = 1.0 if tv_no_fx else fx
+            
             avg_price = cost_basis / qty_held
 
             if live_price is not None:
                 lp = live_price / 100 if pence else live_price
                 ap = avg_price / 100  if pence else avg_price
-                mv_local   = lp * qty_held
-                cost_usd   = ap * qty_held * fx
-                mv_usd     = mv_local * fx
+                cost_usd   = ap * qty_held * effective_fx
+                mv_usd     = mv_local * effective_fx
                 unreal_pnl = mv_usd - cost_usd
                 unreal_pct = (lp - ap) / ap if ap else 0
             else:
                 lp = avg_price / 100 if pence else avg_price
                 ap = lp
-                mv_usd     = ap * qty_held * fx
+                mv_usd     = ap * qty_held * effective_fx
                 cost_usd   = mv_usd
                 unreal_pnl = 0
                 unreal_pct = 0
@@ -250,11 +259,12 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
             ytk    = e.get("yf_ticker", tk)
             pence  = is_pence(ytk)
             currency = get_currency(ytk)
+            no_fx    = _is_tv_no_fx(e)
             fx_r   = fx_rates.get(currency, 1.0)
             p_usd  = (price / 100 if pence else price) * fx_r
 
             if action == "OPEN":
-                holdings[tk] = {"qty": qty, "yf_ticker": ytk}
+                holdings[tk] = {"qty": qty, "yf_ticker": ytk, "tv_no_fx": no_fx}
                 cash -= p_usd * qty
             elif action == "ADD":
                 if tk in holdings:
@@ -277,7 +287,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
             ytk    = h["yf_ticker"]
             pence  = is_pence(ytk)
             currency = get_currency(ytk)
-            fx_r   = fx_rates.get(currency, 1.0)
+            fx_r     = 1.0 if h.get("tv_no_fx", False) else fx_rates.get(currency, 1.0)
             try:
                 col = ytk
                 if col in prices.columns:
