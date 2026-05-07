@@ -39,10 +39,8 @@ img,svg{display:block;max-width:100%}
 button{cursor:pointer;background:none;border:none;font:inherit;color:inherit}
 table{border-collapse:collapse;width:100%}
 
-/* Layout */
 .container{max-width:1200px;margin-inline:auto;padding-inline:1.5rem}
 
-/* Header */
 header{background:var(--color-surface);border-bottom:1px solid var(--color-border);position:sticky;top:0;z-index:100;backdrop-filter:blur(8px)}
 .header-inner{display:flex;align-items:center;justify-content:space-between;padding-block:.875rem;gap:1rem}
 .logo{display:flex;align-items:center;gap:.75rem}
@@ -56,21 +54,17 @@ header{background:var(--color-surface);border-bottom:1px solid var(--color-borde
 .theme-toggle{width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:var(--radius-md);border:1px solid var(--color-border);color:var(--color-text-muted);transition:all .18s}
 .theme-toggle:hover{background:var(--color-surface-2);color:var(--color-text)}
 
-/* Loading */
 .loading-screen{position:fixed;inset:0;background:var(--color-bg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1rem;z-index:999;transition:opacity .4s}
 .loading-screen.hidden{opacity:0;pointer-events:none}
 .spinner{width:36px;height:36px;border:3px solid var(--color-border);border-top-color:var(--color-primary);border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .loading-text{font-size:.875rem;color:var(--color-text-muted)}
 
-/* Error */
 .error-banner{background:color-mix(in oklch,var(--color-error) 10%,transparent);border:1px solid color-mix(in oklch,var(--color-error) 30%,transparent);color:var(--color-error);padding:1rem 1.5rem;border-radius:var(--radius-md);margin:1.5rem 0;font-size:.875rem;display:none}
 
-/* Main */
 main{padding-block:2rem}
 .section-gap{margin-bottom:2rem}
 
-/* KPI Grid */
 .kpi-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:1rem;margin-bottom:2rem}
 .kpi-card{background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius-lg);padding:1.25rem 1.5rem;box-shadow:var(--shadow-sm)}
 .kpi-label{font-size:.7rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--color-text-muted);margin-bottom:.5rem}
@@ -78,14 +72,23 @@ main{padding-block:2rem}
 .kpi-delta{font-size:.8rem;font-weight:500;margin-top:.4rem;font-variant-numeric:tabular-nums}
 .up{color:var(--color-success)}.down{color:var(--color-error)}.neutral{color:var(--color-text-muted)}
 
-/* Charts Grid */
+/* Sharpe comparison card */
+.sharpe-compare{display:flex;flex-direction:column;gap:.3rem;margin-top:.5rem}
+.sharpe-row{display:flex;align-items:baseline;justify-content:space-between;gap:.5rem}
+.sharpe-row-label{font-size:.7rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--color-text-muted)}
+.sharpe-row-value{font-size:1.5rem;font-weight:700;font-variant-numeric:tabular-nums;line-height:1;letter-spacing:-.02em}
+.sharpe-divider{height:1px;background:var(--color-divider);margin:.35rem 0}
+.sharpe-badge{display:inline-flex;align-items:center;gap:.3rem;font-size:.65rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;padding:.15rem .45rem;border-radius:9999px;margin-top:.4rem}
+.sharpe-badge.outperform{background:color-mix(in oklch,var(--color-success) 14%,transparent);color:var(--color-success);border:1px solid color-mix(in oklch,var(--color-success) 28%,transparent)}
+.sharpe-badge.underperform{background:color-mix(in oklch,var(--color-error) 14%,transparent);color:var(--color-error);border:1px solid color-mix(in oklch,var(--color-error) 28%,transparent)}
+.sharpe-badge.neutral-badge{background:color-mix(in oklch,var(--color-text-muted) 12%,transparent);color:var(--color-text-muted);border:1px solid color-mix(in oklch,var(--color-text-muted) 25%,transparent)}
+
 .charts-grid{display:grid;grid-template-columns:1fr;gap:1.5rem;margin-bottom:2rem}
 @media(min-width:900px){.charts-grid{grid-template-columns:2fr 1fr}}
 .chart-card{background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius-lg);padding:1.5rem;box-shadow:var(--shadow-sm)}
 .chart-title{font-size:.8rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--color-text-muted);margin-bottom:1.25rem}
 .chart-wrap{position:relative;height:260px}
 
-/* Table Card */
 .table-card{background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius-lg);overflow:hidden;box-shadow:var(--shadow-sm);margin-bottom:2rem}
 .table-header{padding:1.25rem 1.5rem;border-bottom:1px solid var(--color-divider);display:flex;align-items:center;justify-content:space-between}
 .table-header h2{font-size:.8rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--color-text-muted)}
@@ -101,12 +104,10 @@ table tr:hover td{background:color-mix(in oklch,var(--color-primary) 5%,transpar
 .badge-commodity{background:color-mix(in oklch,var(--color-gold) 15%,transparent);color:var(--color-gold)}
 .badge-crypto{background:color-mix(in oklch,var(--color-success) 15%,transparent);color:var(--color-success)}
 
-/* Footer */
 footer{border-top:1px solid var(--color-border);padding-block:1.5rem;margin-top:2rem}
 .footer-inner{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem}
 .footer-note{font-size:.75rem;color:var(--color-text-faint)}
 
-/* Responsive */
 @media(max-width:600px){
   .kpi-grid{grid-template-columns:1fr 1fr}
   .header-right .live-badge{display:none}
@@ -150,8 +151,25 @@ footer{border-top:1px solid var(--color-border);padding-block:1.5rem;margin-top:
     <div class="kpi-grid" id="kpiGrid">
       <div class="kpi-card"><div class="kpi-label">Portfolio Value</div><div class="kpi-value" id="kpiValue">—</div><div class="kpi-delta neutral" id="kpiInception">Since inception</div></div>
       <div class="kpi-card"><div class="kpi-label">Total P&amp;L</div><div class="kpi-value" id="kpiPnl">—</div><div class="kpi-delta" id="kpiPnlPct">—</div></div>
-      <div class="kpi-card"><div class="kpi-label">Sharpe Ratio</div><div class="kpi-value" id="kpiSharpe">—</div><div class="kpi-delta neutral">Annualised</div></div>
-      <div class="kpi-card"><div class="kpi-label">Max Drawdown</div><div class="kpi-value" id="kpiDrawdown">—</div><div class="kpi-delta neutral">Peak to trough</div></div>
+
+      <!-- Sharpe card with benchmark comparison -->
+      <div class="kpi-card" style="min-width:200px">
+        <div class="kpi-label">Sharpe Ratio</div>
+        <div class="sharpe-compare">
+          <div class="sharpe-row">
+            <span class="sharpe-row-label">Portfolio</span>
+            <span class="sharpe-row-value" id="kpiSharpe">—</span>
+          </div>
+          <div class="sharpe-divider"></div>
+          <div class="sharpe-row">
+            <span class="sharpe-row-label" id="benchSharpeLabel">SPY</span>
+            <span class="sharpe-row-value neutral" id="kpiBenchSharpe">—</span>
+          </div>
+        </div>
+        <div id="sharpeBadge"></div>
+      </div>
+
+      <div class="kpi-card"><div class="kpi-label">Max Drawdown</div><div class="kpi-value down" id="kpiDrawdown">—</div><div class="kpi-delta neutral">Peak to trough</div></div>
       <div class="kpi-card"><div class="kpi-label">Positions</div><div class="kpi-value" id="kpiPositions">—</div><div class="kpi-delta neutral" id="kpiAssetClasses">—</div></div>
       <div class="kpi-card"><div class="kpi-label">Cash</div><div class="kpi-value" id="kpiCash">—</div><div class="kpi-delta neutral" id="kpiCashPct">—</div></div>
     </div>
@@ -208,7 +226,6 @@ footer{border-top:1px solid var(--color-border);padding-block:1.5rem;margin-top:
 </footer>
 
 <script>
-// ── Theme toggle ──────────────────────────────────────────────────────────────
 (function(){
   const t = document.querySelector('[data-theme-toggle]');
   const r = document.documentElement;
@@ -225,7 +242,6 @@ footer{border-top:1px solid var(--color-border);padding-block:1.5rem;margin-top:
   });
 })();
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 const fmt = (n, dec=2) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', {minimumFractionDigits:dec, maximumFractionDigits:dec});
 const fmtPct = (n) => n == null ? '—' : (n >= 0 ? '+' : '') + Number(n).toFixed(2) + '%';
 const badgeClass = ac => {
@@ -233,7 +249,6 @@ const badgeClass = ac => {
   return m[ac] || 'badge-equity';
 };
 
-// ── Chart defaults ────────────────────────────────────────────────────────────
 function chartDefaults() {
   const dark = document.documentElement.getAttribute('data-theme') === 'dark';
   return {
@@ -244,10 +259,9 @@ function chartDefaults() {
   };
 }
 
-// ── Fetch & Render ────────────────────────────────────────────────────────────
 const API = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost'
   ? 'http://localhost:5000'
-  : 'https://portfolio-zaca.onrender.com';  
+  : 'https://portfolio-zaca.onrender.com';
 
 let navChartInst, allocChartInst;
 
@@ -271,7 +285,6 @@ async function loadPortfolio() {
 function render(d) {
   const m = d.metrics || {};
 
-  // KPIs
   document.getElementById('kpiValue').textContent = fmt(d.current_value, 0);
   document.getElementById('kpiInception').textContent = 'Since ' + d.inception_date;
 
@@ -283,7 +296,33 @@ function render(d) {
   pnlPctEl.textContent = fmtPct(m.total_return_pct);
   pnlPctEl.className = 'kpi-delta ' + (pnl >= 0 ? 'up' : 'down');
 
-  document.getElementById('kpiSharpe').textContent = m.Sharpe_ratio != null ? m.Sharpe_ratio.toFixed(2) : '—';
+  // Sharpe + benchmark comparison
+  const portSharpe = m.Sharpe_ratio;
+  const benchSharpe = d.bench_sharpe;
+  const benchName = d.benchmark || 'SPY';
+
+  const sharpeEl = document.getElementById('kpiSharpe');
+  sharpeEl.textContent = portSharpe != null ? portSharpe.toFixed(2) : '—';
+  sharpeEl.className = 'sharpe-row-value ' + (portSharpe != null && benchSharpe != null ? (portSharpe >= benchSharpe ? 'up' : 'down') : '');
+
+  document.getElementById('benchSharpeLabel').textContent = benchName;
+  document.getElementById('kpiBenchSharpe').textContent = benchSharpe != null ? benchSharpe.toFixed(2) : '—';
+
+  const badgeEl = document.getElementById('sharpeBadge');
+  if (portSharpe != null && benchSharpe != null) {
+    const diff = portSharpe - benchSharpe;
+    const absDiff = Math.abs(diff).toFixed(2);
+    if (diff > 0.05) {
+      badgeEl.innerHTML = `<span class="sharpe-badge outperform">&#9650; +${absDiff} vs ${benchName}</span>`;
+    } else if (diff < -0.05) {
+      badgeEl.innerHTML = `<span class="sharpe-badge underperform">&#9660; ${diff.toFixed(2)} vs ${benchName}</span>`;
+    } else {
+      badgeEl.innerHTML = `<span class="sharpe-badge neutral-badge">&#8776; In line with ${benchName}</span>`;
+    }
+  } else {
+    badgeEl.innerHTML = '';
+  }
+
   const ddEl = document.getElementById('kpiDrawdown');
   ddEl.textContent = m.max_drawdown_pct != null ? '-' + m.max_drawdown_pct.toFixed(2) + '%' : '—';
   ddEl.className = 'kpi-value down';
@@ -298,7 +337,6 @@ function render(d) {
 
   document.getElementById('benchLabel').textContent = d.benchmark;
 
-  // NAV Chart
   const c = chartDefaults();
   const navCtx = document.getElementById('navChart').getContext('2d');
   if (navChartInst) navChartInst.destroy();
@@ -351,7 +389,6 @@ function render(d) {
     }
   });
 
-  // Allocation Donut
   const allocCtx = document.getElementById('allocChart').getContext('2d');
   if (allocChartInst) allocChartInst.destroy();
   const alloc = d.allocation || {};
@@ -384,7 +421,6 @@ function render(d) {
     }
   });
 
-  // Holdings Table
   const tbody = document.getElementById('holdingsBody');
   tbody.innerHTML = '';
   (d.open_positions||[]).sort((a,b)=>b.mv_usd-a.mv_usd).forEach(p => {
@@ -403,7 +439,6 @@ function render(d) {
     </tr>`;
   });
 
-  // Closed Trades
   const closed = d.closed_trades || [];
   if (closed.length > 0) {
     document.getElementById('closedCard').style.display = '';

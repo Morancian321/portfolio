@@ -86,7 +86,7 @@ def get_risk_free_rate():
             return float(h["Close"].iloc[-1]) / 100
     except:
         pass
-    return 0.043  # fallback if yfinance unavailable
+    return 0.036  # fallback if yfinance unavailable
 
 def get_live_price(yf_ticker, manual_map):
     if yf_ticker in manual_map:
@@ -165,7 +165,6 @@ def build_positions(trades, fx_rates, manual_map):
 
                 currency = get_currency(yf_ticker)
                 fx       = fx_rates.get(currency, 1.0)
-                # Sheet prices for LSE are in pence — convert to GBP for USD calc
                 if is_lse(yf_ticker):
                     avg   /= 100
                     price /= 100
@@ -190,15 +189,12 @@ def build_positions(trades, fx_rates, manual_map):
 
             avg_price = cost_basis / qty_held
 
-            # For LSE tickers, sheet prices are stored in pence — convert to GBP
             if is_lse(yf_ticker):
                 ap = avg_price / 100
             else:
                 ap = avg_price
 
             if live_price is not None:
-                # Normalize live price: yfinance .L tickers inconsistently
-                # return pence or GBP — use avg cost as sanity reference
                 if is_lse(yf_ticker):
                     lp = normalize_lse_price(live_price, ap)
                 else:
@@ -262,9 +258,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
     for t in trades:
         events_by_date[t["date"]].append(t)
 
-    # Pre-compute avg costs per ticker for normalize_lse_price reference
-    # We track this as we process events chronologically
-    holdings = {}  # ticker -> {qty, yf_ticker, tv_no_fx, avg_cost_gbp}
+    holdings = {}
     cash = starting
     nav_series = []
     bench_series = []
@@ -285,7 +279,6 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
             no_fx    = _is_tv_no_fx(e)
             fx_r     = fx_rates.get(currency, 1.0)
 
-            # Sheet prices for LSE are in pence — convert to GBP for cash flow
             price_gbp = price / 100 if is_lse(ytk) else price
             p_usd     = price_gbp * (1.0 if no_fx else fx_r)
 
@@ -317,7 +310,6 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
                     else:
                         holdings[tk]["qty"] -= close_qty
 
-        # Portfolio value on this date
         port_val = cash
         for tk, h in holdings.items():
             ytk      = h["yf_ticker"]
@@ -335,7 +327,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
                     p_usd = p_gbp * fx_r
                     port_val += p_usd * h["qty"]
                 else:
-                    port_val += h["qty"]  # fallback
+                    port_val += h["qty"]
             except:
                 pass
 
@@ -353,7 +345,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
 
     return nav_series, bench_series
 
-def calc_metrics(nav_series, starting_capital, rf_annual=0.043):
+def calc_metrics(nav_series, starting_capital, rf_annual=0.036):
     if len(nav_series) < 2:
         return {}
     values = [x["value"] for x in nav_series]
@@ -405,13 +397,11 @@ def portfolio():
         for p in open_pos:
             p["weight_pct"] = round(p["mv_usd"] / total_val * 100, 2) if total_val else 0
 
-        # Build allocation dict: each asset class as % of total portfolio value (incl. cash)
         alloc = {}
         for p in open_pos:
             ac = p["asset_class"]
             alloc[ac] = round(alloc.get(ac, 0) + p["mv_usd"] / total_val * 100, 2)
 
-        # Add cash as its own allocation slice so the pie sums to 100%
         if cash > 0 and total_val > 0:
             alloc["Cash"] = round(cash / total_val * 100, 2)
 
@@ -419,6 +409,10 @@ def portfolio():
             trades, fx_rates, cfg, cfg["benchmark"]
         )
         metrics = calc_metrics(nav_series, cfg["starting_capital"], rf_annual=rf_rate)
+
+        # Benchmark Sharpe over the same period using the same Rf
+        bench_metrics = calc_metrics(bench_series, cfg["starting_capital"], rf_annual=rf_rate)
+        bench_sharpe  = bench_metrics.get("Sharpe_ratio")
 
         realised_total = sum(t.get("realised_pnl_usd", 0) for t in closed)
 
@@ -431,6 +425,7 @@ def portfolio():
             "total_pnl":         round(total_mv - total_cost + realised_total, 2),
             "cash":              round(max(cash, 0), 2),
             "metrics":           metrics,
+            "bench_sharpe":      bench_sharpe,
             "rf_rate":           round(rf_rate * 100, 3),
             "open_positions":    open_pos,
             "closed_trades":     closed,
