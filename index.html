@@ -72,10 +72,59 @@ main{padding-block:2rem}
 .kpi-delta{font-size:.8rem;font-weight:500;margin-top:.4rem;font-variant-numeric:tabular-nums}
 .up{color:var(--color-success)}.down{color:var(--color-error)}.neutral{color:var(--color-text-muted)}
 
-/* Sharpe comparison card */
+/* Sharpe card with tooltip */
+.sharpe-card-inner{position:relative;cursor:default}
+.sharpe-info-icon{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;border:1px solid var(--color-text-faint);color:var(--color-text-faint);font-size:.6rem;font-weight:700;line-height:1;margin-left:.3rem;vertical-align:middle;user-select:none;flex-shrink:0}
+
+/* Tooltip */
+.sharpe-tooltip{
+  position:absolute;
+  top:calc(100% + 10px);
+  left:50%;
+  transform:translateX(-50%);
+  width:260px;
+  background:var(--color-surface-2);
+  border:1px solid var(--color-border);
+  border-radius:var(--radius-lg);
+  padding:1rem 1.1rem;
+  box-shadow:var(--shadow-md);
+  z-index:200;
+  opacity:0;
+  pointer-events:none;
+  transition:opacity .15s ease, transform .15s ease;
+  transform:translateX(-50%) translateY(4px);
+}
+.sharpe-card-inner:hover .sharpe-tooltip,
+.sharpe-card-inner:focus-within .sharpe-tooltip{
+  opacity:1;
+  pointer-events:auto;
+  transform:translateX(-50%) translateY(0);
+}
+/* Arrow */
+.sharpe-tooltip::before{
+  content:'';
+  position:absolute;
+  top:-6px;
+  left:50%;
+  transform:translateX(-50%);
+  width:10px;height:10px;
+  background:var(--color-surface-2);
+  border-left:1px solid var(--color-border);
+  border-top:1px solid var(--color-border);
+  transform:translateX(-50%) rotate(45deg);
+}
+.tt-title{font-size:.65rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--color-text-muted);margin-bottom:.65rem;padding-bottom:.5rem;border-bottom:1px solid var(--color-divider)}
+.tt-row{display:flex;justify-content:space-between;align-items:baseline;gap:.5rem;padding:.25rem 0}
+.tt-row+.tt-row{border-top:1px solid color-mix(in oklch,var(--color-divider) 60%,transparent)}
+.tt-key{font-size:.72rem;color:var(--color-text-muted);flex-shrink:0}
+.tt-val{font-size:.78rem;font-weight:600;color:var(--color-text);text-align:right;font-variant-numeric:tabular-nums}
+.tt-formula{margin-top:.65rem;padding-top:.55rem;border-top:1px solid var(--color-divider);font-size:.68rem;color:var(--color-text-muted);line-height:1.5;font-family:monospace}
+.tt-note{margin-top:.55rem;font-size:.67rem;color:var(--color-text-faint);line-height:1.4;font-style:italic}
+
+/* Sharpe comparison */
 .sharpe-compare{display:flex;flex-direction:column;gap:.3rem;margin-top:.5rem}
 .sharpe-row{display:flex;align-items:baseline;justify-content:space-between;gap:.5rem}
-.sharpe-row-label{font-size:.7rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--color-text-muted)}
+.sharpe-row-label{font-size:.7rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--color-text-muted);display:flex;align-items:center;gap:.2rem}
 .sharpe-row-value{font-size:1.5rem;font-weight:700;font-variant-numeric:tabular-nums;line-height:1;letter-spacing:-.02em}
 .sharpe-divider{height:1px;background:var(--color-divider);margin:.35rem 0}
 .sharpe-badge{display:inline-flex;align-items:center;gap:.3rem;font-size:.65rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;padding:.15rem .45rem;border-radius:9999px;margin-top:.4rem}
@@ -111,6 +160,9 @@ footer{border-top:1px solid var(--color-border);padding-block:1.5rem;margin-top:
 @media(max-width:600px){
   .kpi-grid{grid-template-columns:1fr 1fr}
   .header-right .live-badge{display:none}
+  .sharpe-tooltip{left:0;transform:translateX(0);width:240px}
+  .sharpe-card-inner:hover .sharpe-tooltip{transform:translateX(0) translateY(0)}
+  .sharpe-tooltip::before{left:2rem}
 }
 </style>
 </head>
@@ -152,21 +204,53 @@ footer{border-top:1px solid var(--color-border);padding-block:1.5rem;margin-top:
       <div class="kpi-card"><div class="kpi-label">Portfolio Value</div><div class="kpi-value" id="kpiValue">—</div><div class="kpi-delta neutral" id="kpiInception">Since inception</div></div>
       <div class="kpi-card"><div class="kpi-label">Total P&amp;L</div><div class="kpi-value" id="kpiPnl">—</div><div class="kpi-delta" id="kpiPnlPct">—</div></div>
 
-      <!-- Sharpe card with benchmark comparison -->
-      <div class="kpi-card" style="min-width:200px">
-        <div class="kpi-label">Sharpe Ratio</div>
-        <div class="sharpe-compare">
-          <div class="sharpe-row">
-            <span class="sharpe-row-label">Portfolio</span>
-            <span class="sharpe-row-value" id="kpiSharpe">—</span>
+      <!-- Sharpe card with hover tooltip -->
+      <div class="kpi-card" style="min-width:200px;overflow:visible">
+        <div class="kpi-label" style="display:flex;align-items:center;gap:.25rem">
+          Sharpe Ratio
+          <span class="sharpe-info-icon" aria-label="Sharpe ratio info">?</span>
+        </div>
+        <div class="sharpe-card-inner" tabindex="0" role="region" aria-label="Sharpe ratio details">
+          <div class="sharpe-compare">
+            <div class="sharpe-row">
+              <span class="sharpe-row-label">Portfolio</span>
+              <span class="sharpe-row-value" id="kpiSharpe">—</span>
+            </div>
+            <div class="sharpe-divider"></div>
+            <div class="sharpe-row">
+              <span class="sharpe-row-label" id="benchSharpeLabel">SPY</span>
+              <span class="sharpe-row-value neutral" id="kpiBenchSharpe">—</span>
+            </div>
           </div>
-          <div class="sharpe-divider"></div>
-          <div class="sharpe-row">
-            <span class="sharpe-row-label" id="benchSharpeLabel">SPY</span>
-            <span class="sharpe-row-value neutral" id="kpiBenchSharpe">—</span>
+          <div id="sharpeBadge"></div>
+
+          <!-- Hover tooltip -->
+          <div class="sharpe-tooltip" role="tooltip">
+            <div class="tt-title">Sharpe Ratio — How it's calculated</div>
+            <div class="tt-row">
+              <span class="tt-key">Risk-free rate (Rₓ)</span>
+              <span class="tt-val" id="ttRfRate">—</span>
+            </div>
+            <div class="tt-row">
+              <span class="tt-key">Rf source</span>
+              <span class="tt-val">13-week T-bill (^IRX)</span>
+            </div>
+            <div class="tt-row">
+              <span class="tt-key">Period</span>
+              <span class="tt-val" id="ttPeriod">—</span>
+            </div>
+            <div class="tt-row">
+              <span class="tt-key">Trading days (n)</span>
+              <span class="tt-val" id="ttDays">—</span>
+            </div>
+            <div class="tt-row">
+              <span class="tt-key">Annualisation</span>
+              <span class="tt-val">√252 × daily ratio</span>
+            </div>
+            <div class="tt-formula">(mean daily return − Rf/252)<br>────────────────────────── × √252<br>std dev of daily returns</div>
+            <div class="tt-note" id="ttNote">—</div>
           </div>
         </div>
-        <div id="sharpeBadge"></div>
       </div>
 
       <div class="kpi-card"><div class="kpi-label">Max Drawdown</div><div class="kpi-value down" id="kpiDrawdown">—</div><div class="kpi-delta neutral">Peak to trough</div></div>
@@ -322,6 +406,30 @@ function render(d) {
   } else {
     badgeEl.innerHTML = '';
   }
+
+  // Populate tooltip fields
+  const rfRate = d.rf_rate;  // already in % e.g. 4.320
+  const navSeries = d.nav_series || [];
+  const nDays = navSeries.length;
+  const inceptionDate = d.inception_date || '—';
+  const today = new Date().toISOString().slice(0,10);
+
+  document.getElementById('ttRfRate').textContent = rfRate != null ? rfRate.toFixed(3) + '% p.a.' : '—';
+  document.getElementById('ttPeriod').textContent = nDays > 0 ? inceptionDate + ' → ' + today : '—';
+  document.getElementById('ttDays').textContent = nDays > 0 ? nDays + ' trading days' : '—';
+
+  // Reliability note based on sample size
+  let note = '';
+  if (nDays < 63) {
+    note = '⚠ < 3 months of data — Sharpe is highly unreliable at this sample size.';
+  } else if (nDays < 126) {
+    note = '⚠ < 6 months of data — treat this Sharpe as directional only, not statistically robust.';
+  } else if (nDays < 252) {
+    note = 'ℹ < 1 year of data — Sharpe is indicative. A full year gives more stability.';
+  } else {
+    note = '✓ 1+ year of data — Sharpe estimate is reasonably stable.';
+  }
+  document.getElementById('ttNote').textContent = note;
 
   const ddEl = document.getElementById('kpiDrawdown');
   ddEl.textContent = m.max_drawdown_pct != null ? '-' + m.max_drawdown_pct.toFixed(2) + '%' : '—';
