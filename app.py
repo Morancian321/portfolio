@@ -23,9 +23,19 @@ def get_currency(yf_ticker):
     if t.endswith(".IR"):  return "EUR"
     return "USD"
 
-# LSE tickers return pence — divide by 100
-def is_pence(yf_ticker):
+def is_lse(yf_ticker):
     return yf_ticker.upper().endswith(".L")
+
+def normalize_lse_price(raw_price, avg_price_gbp):
+    """
+    yfinance .L tickers inconsistently return pence or GBP depending on the stock.
+    If raw_price is >50x the known GBP avg cost, it must be in pence — divide by 100.
+    Otherwise it's already in GBP.
+    avg_price_gbp is the sheet cost already converted to GBP (pence sheet price / 100).
+    """
+    if avg_price_gbp > 0 and raw_price > avg_price_gbp * 50:
+        return raw_price / 100
+    return raw_price
 
 def get_sheet_data():
     creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
@@ -84,10 +94,9 @@ def _is_tv_no_fx(trade_row):
     (no GBP->USD conversion). We skip FX here to match broker values."""
     val = str(trade_row.get("tv_no_fx", "")).strip().upper()
     return val in ("TRUE", "1", "YES")
-    
+
 def build_positions(trades, fx_rates, manual_map):
     """Reconstruct open positions and closed trades from trade log."""
-    # Group by ticker
     from collections import defaultdict
     ticker_trades = defaultdict(list)
     for t in trades:
@@ -107,7 +116,7 @@ def build_positions(trades, fx_rates, manual_map):
         name = events_sorted[0].get("name", ticker)
         direction = events_sorted[0].get("direction", "LONG")
         tv_no_fx = False
-        
+
         for e in events_sorted:
             action = e.get("action", "").upper()
             qty    = float(e.get("quantity", 0))
@@ -143,14 +152,13 @@ def build_positions(trades, fx_rates, manual_map):
                 avg = cost_basis / qty_held if qty_held else price
                 realised = (price - avg) * qty_held
 
-                # Convert to USD
                 currency = get_currency(yf_ticker)
-                pence    = is_pence(yf_ticker)
                 fx       = fx_rates.get(currency, 1.0)
-                if pence:
-                    avg      /= 100
-                    price    /= 100
-                realised_usd = realised * fx
+                # Sheet prices for LSE are in pence — convert to GBP for USD calc
+                if is_lse(yf_ticker):
+                    avg   /= 100
+                    price /= 100
+                realised_usd = realised / 100 * fx if is_lse(yf_ticker) else realised * fx
 
                 closed_trades.append({
                     "ticker": ticker, "name": name,
@@ -164,25 +172,33 @@ def build_positions(trades, fx_rates, manual_map):
                 cost_basis = 0.0
 
         if qty_held > 0:
-            # Still open
-            live_price = get_live_price(yf_ticker, manual_map)
-            currency   = get_currency(yf_ticker)
-            pence      = is_pence(yf_ticker)
-            fx         = fx_rates.get(currency, 1.0)
+            live_price   = get_live_price(yf_ticker, manual_map)
+            currency     = get_currency(yf_ticker)
+            fx           = fx_rates.get(currency, 1.0)
             effective_fx = 1.0 if tv_no_fx else fx
-            
+
             avg_price = cost_basis / qty_held
 
+            # For LSE tickers, sheet prices are stored in pence — convert to GBP
+            if is_lse(yf_ticker):
+                ap = avg_price / 100
+            else:
+                ap = avg_price
+
             if live_price is not None:
-                lp = live_price / 100 if pence else live_price
-                ap = avg_price / 100  if pence else avg_price
+                # Normalize live price: yfinance .L tickers inconsistently
+                # return pence or GBP — use avg cost as sanity reference
+                if is_lse(yf_ticker):
+                    lp = normalize_lse_price(live_price, ap)
+                else:
+                    lp = live_price
+
                 cost_usd   = ap * qty_held * effective_fx
                 mv_usd     = lp * qty_held * effective_fx
                 unreal_pnl = mv_usd - cost_usd
                 unreal_pct = (lp - ap) / ap if ap else 0
             else:
-                lp = avg_price / 100 if pence else avg_price
-                ap = lp
+                lp         = ap
                 mv_usd     = ap * qty_held * effective_fx
                 cost_usd   = mv_usd
                 unreal_pnl = 0
@@ -194,7 +210,7 @@ def build_positions(trades, fx_rates, manual_map):
                 "asset_class": asset_class,
                 "direction":   direction,
                 "quantity":    qty_held,
-                "avg_price":   round(avg_price / 100 if pence else avg_price, 4),
+                "avg_price":   round(ap, 4),
                 "live_price":  round(lp, 4) if live_price else None,
                 "currency":    currency,
                 "mv_usd":      round(mv_usd, 2),
@@ -213,13 +229,11 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
     today     = datetime.today()
     starting  = cfg["starting_capital"]
 
-    # Collect all unique yf tickers
     ticker_map = {}
     for t in trades:
         if t.get("yf_ticker") and t.get("ticker"):
             ticker_map[t["ticker"]] = t.get("yf_ticker")
 
-    # Fetch historical prices for all tickers + FX + benchmark
     all_tickers = list(set(ticker_map.values())) + ["GBPUSD=X", "EURUSD=X", benchmark_ticker]
     raw = yf.download(all_tickers, start=inception.strftime("%Y-%m-%d"),
                       end=(today + timedelta(days=1)).strftime("%Y-%m-%d"),
@@ -232,17 +246,17 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
 
     prices = prices.ffill().bfill()
 
-    # Build daily snapshots
     from collections import defaultdict
     events_by_date = defaultdict(list)
     for t in trades:
         events_by_date[t["date"]].append(t)
 
-    holdings = {}  # ticker -> {qty, cost, yf_ticker}
+    # Pre-compute avg costs per ticker for normalize_lse_price reference
+    # We track this as we process events chronologically
+    holdings = {}  # ticker -> {qty, yf_ticker, tv_no_fx, avg_cost_gbp}
     cash = starting
     nav_series = []
     bench_series = []
-
     bench_start = None
 
     date_range = pd.bdate_range(start=inception, end=today)
@@ -250,27 +264,38 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
     for dt in date_range:
         ds = dt.strftime("%Y-%m-%d")
 
-        # Process any trades on this date
         for e in events_by_date.get(ds, []):
-            tk     = e["ticker"]
-            qty    = float(e.get("quantity", 0))
-            price  = float(e.get("price", 0))
-            action = e.get("action", "").upper()
-            ytk    = e.get("yf_ticker", tk)
-            pence  = is_pence(ytk)
+            tk       = e["ticker"]
+            qty      = float(e.get("quantity", 0))
+            price    = float(e.get("price", 0))
+            action   = e.get("action", "").upper()
+            ytk      = e.get("yf_ticker", tk)
             currency = get_currency(ytk)
             no_fx    = _is_tv_no_fx(e)
-            fx_r   = fx_rates.get(currency, 1.0)
-            p_usd  = (price / 100 if pence else price) * fx_r
+            fx_r     = fx_rates.get(currency, 1.0)
+
+            # Sheet prices for LSE are in pence — convert to GBP for cash flow
+            price_gbp = price / 100 if is_lse(ytk) else price
+            p_usd     = price_gbp * (1.0 if no_fx else fx_r)
 
             if action == "OPEN":
-                holdings[tk] = {"qty": qty, "yf_ticker": ytk, "tv_no_fx": no_fx}
+                holdings[tk] = {
+                    "qty": qty, "yf_ticker": ytk, "tv_no_fx": no_fx,
+                    "avg_cost_gbp": price_gbp
+                }
                 cash -= p_usd * qty
             elif action == "ADD":
                 if tk in holdings:
-                    holdings[tk]["qty"] += qty
+                    old = holdings[tk]
+                    total_qty  = old["qty"] + qty
+                    avg_cost   = (old["avg_cost_gbp"] * old["qty"] + price_gbp * qty) / total_qty
+                    holdings[tk]["qty"] = total_qty
+                    holdings[tk]["avg_cost_gbp"] = avg_cost
                 else:
-                    holdings[tk] = {"qty": qty, "yf_ticker": ytk}
+                    holdings[tk] = {
+                        "qty": qty, "yf_ticker": ytk, "tv_no_fx": no_fx,
+                        "avg_cost_gbp": price_gbp
+                    }
                 cash -= p_usd * qty
             elif action in ("REDUCE", "CLOSE"):
                 if tk in holdings:
@@ -281,18 +306,22 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
                     else:
                         holdings[tk]["qty"] -= close_qty
 
-        # Calculate portfolio value on this date
+        # Portfolio value on this date
         port_val = cash
         for tk, h in holdings.items():
-            ytk    = h["yf_ticker"]
-            pence  = is_pence(ytk)
+            ytk      = h["yf_ticker"]
             currency = get_currency(ytk)
             fx_r     = 1.0 if h.get("tv_no_fx", False) else fx_rates.get(currency, 1.0)
+            avg_cost_gbp = h.get("avg_cost_gbp", 0)
             try:
                 col = ytk
                 if col in prices.columns:
-                    p = float(prices.loc[:dt, col].iloc[-1])
-                    p_usd = (p / 100 if pence else p) * fx_r
+                    p_raw = float(prices.loc[:dt, col].iloc[-1])
+                    if is_lse(ytk):
+                        p_gbp = normalize_lse_price(p_raw, avg_cost_gbp)
+                    else:
+                        p_gbp = p_raw
+                    p_usd = p_gbp * fx_r
                     port_val += p_usd * h["qty"]
                 else:
                     port_val += h["qty"]  # fallback
@@ -301,7 +330,6 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
 
         nav_series.append({"date": ds, "value": round(port_val, 2)})
 
-        # Benchmark
         try:
             if benchmark_ticker in prices.columns:
                 bp = float(prices.loc[:dt, benchmark_ticker].iloc[-1])
@@ -360,11 +388,9 @@ def portfolio():
         cash        = cfg["starting_capital"] - total_cost
         total_val   = total_mv + max(cash, 0)
 
-        # Weights
         for p in open_pos:
             p["weight_pct"] = round(p["mv_usd"] / total_val * 100, 2) if total_val else 0
 
-        # Asset class breakdown
         alloc = {}
         for p in open_pos:
             ac = p["asset_class"]
@@ -400,6 +426,7 @@ def portfolio():
 @app.route("/health")
 def health():
     return jsonify({"status": "ok"})
+
 from flask import send_from_directory
 
 @app.route("/")
