@@ -355,7 +355,7 @@ function render(d) {
   const allocCtx = document.getElementById('allocChart').getContext('2d');
   if (allocChartInst) allocChartInst.destroy();
   const alloc = d.allocation || {};
-  const allocColors = ['#4f98a3','#d29922','#ffa657','#bc8cff','#3fb950','#58a6ff','#f85149'];
+  const allocColors = ['#4f98a3','#d29922','#ffa657','#bc8cff','#3fb950','#58a6ff','#f85149','#6e7681'];
   allocChartInst = new Chart(allocCtx, {
     type: 'doughnut',
     data: {
