@@ -352,7 +352,7 @@ def calc_metrics(nav_series, starting_capital):
     mean_r = sum(daily_returns) / len(daily_returns)
     variance = sum((r - mean_r)**2 for r in daily_returns) / len(daily_returns)
     std_r = math.sqrt(variance)
-    sharpe = (mean_r / std_r * math.sqrt(252)) if std_r > 0 else 0
+    Return / Risk = (mean_r / std_r * math.sqrt(252)) if std_r > 0 else 0
 
     peak = values[0]
     max_dd = 0
@@ -367,7 +367,7 @@ def calc_metrics(nav_series, starting_capital):
 
     return {
         "total_return_pct": round(total_return, 2),
-        "sharpe_ratio":     round(sharpe, 2),
+        "Return / Risk_ratio":     round(Return / Risk, 2),
         "max_drawdown_pct": round(max_dd * 100, 2),
         "current_value":    round(values[-1], 2),
         "total_pnl":        round(values[-1] - starting_capital, 2),
