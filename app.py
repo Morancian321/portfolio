@@ -391,10 +391,15 @@ def portfolio():
         for p in open_pos:
             p["weight_pct"] = round(p["mv_usd"] / total_val * 100, 2) if total_val else 0
 
+        # Build allocation dict: each asset class as % of total portfolio value (incl. cash)
         alloc = {}
         for p in open_pos:
             ac = p["asset_class"]
             alloc[ac] = round(alloc.get(ac, 0) + p["mv_usd"] / total_val * 100, 2)
+
+        # Add cash as its own allocation slice so the pie sums to 100%
+        if cash > 0 and total_val > 0:
+            alloc["Cash"] = round(cash / total_val * 100, 2)
 
         nav_series, bench_series = build_nav_curve(
             trades, fx_rates, cfg, cfg["benchmark"]
