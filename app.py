@@ -281,15 +281,6 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
         prices = raw[["Close"]] if "Close" in raw.columns else raw
 
     prices = prices.ffill().bfill()
-    if prices.index.tz is not None:
-        prices.index = prices.index.tz_localize(None)
-
-    volatile_tickers = ["BTC-USD", "COIN"]
-    for col in prices.columns:
-        if col not in volatile_tickers:
-            pct = prices[col].pct_change().abs()
-            prices[col] = prices[col].where(pct < 0.15, other=prices[col].shift(1))
-    prices = prices.ffill()
 
     from collections import defaultdict
     events_by_date = defaultdict(list)
@@ -369,11 +360,9 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
                     p_usd = p_gbp * fx_r
                     port_val += p_usd * h["qty"]
                 else:
-                    # ticker not in price data — fall back to cost basis (NAV stays flat)
-                    port_val += h["avg_cost_gbp"] * h["qty"] * fx_r
-            except (KeyError, IndexError):
-                # price slice failed — fall back to cost basis rather than dropping position
-                port_val += h["avg_cost_gbp"] * h["qty"] * fx_r
+                    port_val += h["qty"]  # fallback
+            except:
+                pass
 
         nav_series.append({"date": ds, "value": round(port_val, 2)})
 
