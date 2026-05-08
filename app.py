@@ -281,6 +281,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
         prices = raw[["Close"]] if "Close" in raw.columns else raw
 
     prices = prices.ffill().bfill()
+    if prices.index.tz is not None:
     prices.index = prices.index.tz_localize(None)
 
     volatile_tickers = ["BTC-USD", "COIN"]
