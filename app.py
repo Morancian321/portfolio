@@ -585,6 +585,14 @@ def portfolio():
 
         realised_total = sum(t.get("realised_pnl_usd", 0) for t in closed)
 
+        # Compute total_pnl as single source of truth for both the dollar figure
+        # and the percentage. This ensures total_return_pct is always consistent
+        # with the displayed total_pnl dollar value.
+        displayed_total_pnl = round(total_mv - total_cost + realised_total, 2)
+        metrics["total_return_pct"] = round(
+            (displayed_total_pnl / cfg["starting_capital"] * 100), 2
+        ) if cfg["starting_capital"] else 0
+
         # --- FX Exposure ---
         fx_exposure = {}
         for currency in ["USD", "GBP", "EUR"]:
@@ -597,7 +605,7 @@ def portfolio():
             "benchmark":              cfg["benchmark"],
             "starting_capital":       cfg["starting_capital"],
             "current_value":          round(total_val, 2),
-            "total_pnl":              round(total_mv - total_cost + realised_total, 2),
+            "total_pnl":              displayed_total_pnl,
             "cash":                   round(max(cash, 0), 2),
             "metrics":                metrics,
             "rf_rate":                round(rf_rate * 100, 3),
