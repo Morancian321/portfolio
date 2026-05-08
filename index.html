@@ -293,14 +293,16 @@ tr.row-loss td:last-child{color:var(--color-error)}
 </footer>
 
 <script>
-// ── Theme toggle ──────────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+// SECTION 1 — THEME TOGGLE
+// ════════════════════════════════════════════════════════════════════════════
 (function(){
   const t = document.querySelector('[data-theme-toggle]');
   const r = document.documentElement;
   let d = r.getAttribute('data-theme') || 'dark';
   const icons = {
-    dark: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>',
-    light: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>'
+    dark: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/><\/svg>',
+    light: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/><\/svg>'
   };
   t.innerHTML = icons[d === 'dark' ? 'light' : 'dark'];
   t.addEventListener('click', () => {
@@ -310,14 +312,312 @@ tr.row-loss td:last-child{color:var(--color-error)}
   });
 })();
 
-// Temporary: hide loading screen after 1s until JS is added in 2B
-setTimeout(() => {
-  document.getElementById('loadingScreen').classList.add('hidden');
-}, 1000);
+// ════════════════════════════════════════════════════════════════════════════
+// SECTION 2 — CONSTANTS
+// ════════════════════════════════════════════════════════════════════════════
+const API = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost'
+  ? 'http://localhost:5000'
+  : 'https://portfolio-zaca.onrender.com';
 
+const MANDATE = {
+  objective:   'TODO: Write your investment objective here',
+  universe:    'Global multi-asset — equities, bonds, infrastructure, commodities, crypto',
+  riskBudget:  'TODO: Define your max drawdown target and volatility target',
+  timeHorizon: 'TODO: Define your investment time horizon',
+  benchmark:   'SPY (to be replaced with blended defensive benchmark)'
+};
+
+const ABOUT_CONTENT = {
+  bio:        'TODO: Write 2-3 sentences about yourself and why you built this fund',
+  contact:    'TODO: Add your LinkedIn or email link',
+  disclaimer: 'This is a personal demo and learning portfolio built to develop investment skills. It does not constitute an offer of securities or regulated investment advice.'
+};
+
+const WATCHLIST = [];    // TODO: { name, ticker, rationale, targetEntry, status, notes }
+const RESEARCH_ENTRIES = [];  // TODO: type: "memo"|"case_study"|"postmortem"
+const TARGET_WEIGHTS = { IWDA: 25, AGGG: 22 };  // TODO: fill in all tickers
+const CHANGELOG = [{ date: '2026-05-08', change: 'Multi-page fund centre rebuild', commit: 'TODO' }];
+const BREACH_HISTORY = [];
+
+// ════════════════════════════════════════════════════════════════════════════
+// SECTION 3 — DATA LAYER
+// ════════════════════════════════════════════════════════════════════════════
+window._portfolioData = null;
+window._rationaleData = null;
+
+async function fetchPortfolio() {
+  const res = await fetch(API + '/api/portfolio');
+  if (!res.ok) throw new Error('API returned ' + res.status);
+  const d = await res.json();
+  if (d.error) throw new Error(d.error);
+  window._portfolioData = d;
+  return d;
+}
+
+async function fetchTradeRationale() {
+  try {
+    const res = await fetch(API + '/api/trade_rationale');
+    window._rationaleData = await res.json();
+  } catch { window._rationaleData = []; }
+}
+
+const getMetrics        = () => window._portfolioData?.metrics || {};
+const getSummary        = () => window._portfolioData || {};
+const getNavSeries      = () => window._portfolioData?.nav_series || [];
+const getBenchmarkSeries= () => window._portfolioData?.benchmark_series || [];
+const getOpenPositions  = () => window._portfolioData?.open_positions || [];
+const getClosedTrades   = () => window._portfolioData?.closed_trades || [];
+const getAllocation      = () => window._portfolioData?.allocation || {};
+const getFxExposure     = () => window._portfolioData?.fx_exposure || {};
+const getSizingPolicy   = () => window._portfolioData?.position_sizing_policy || {};
+
+// ════════════════════════════════════════════════════════════════════════════
+// SECTION 4 — DERIVED METRICS
+// ════════════════════════════════════════════════════════════════════════════
+function computeDailyReturns(navSeries) {
+  const v = navSeries.map(x => x.value);
+  return v.slice(1).map((val, i) => ({ date: navSeries[i+1].date, ret: (val - v[i]) / v[i] }));
+}
+
+function computeMonthlyReturns(navSeries) {
+  const monthly = {};
+  for (let i = 1; i < navSeries.length; i++) {
+    const d = navSeries[i].date.slice(0, 7);
+    if (!monthly[d]) monthly[d] = { start: navSeries[i-1].value, end: navSeries[i].value };
+    else monthly[d].end = navSeries[i].value;
+  }
+  const result = {};
+  for (const [k, v] of Object.entries(monthly))
+    result[k] = ((v.end - v.start) / v.start) * 100;
+  return result;
+}
+
+function computeAnnualReturns(navSeries) {
+  const byYear = {};
+  navSeries.forEach(x => {
+    const y = x.date.slice(0, 4);
+    if (!byYear[y]) byYear[y] = { first: x.value, last: x.value };
+    byYear[y].last = x.value;
+  });
+  const result = {};
+  for (const [y, v] of Object.entries(byYear))
+    result[y] = ((v.last - v.first) / v.first) * 100;
+  return result;
+}
+
+function computeDrawdownSeries(navSeries) {
+  let peak = navSeries[0]?.value || 0;
+  return navSeries.map(x => {
+    if (x.value > peak) peak = x.value;
+    return { date: x.date, drawdown_pct: peak > 0 ? ((peak - x.value) / peak) * 100 : 0 };
+  });
+}
+
+function computeRollingVolatility(navSeries, windowDays = 30) {
+  const rets = computeDailyReturns(navSeries);
+  return rets.map((_, i) => {
+    if (i < 1) return { date: rets[i].date, vol_pct: 0 };
+    const slice = rets.slice(Math.max(0, i - windowDays + 1), i + 1).map(r => r.ret);
+    const mean = slice.reduce((a, b) => a + b, 0) / slice.length;
+    const std = Math.sqrt(slice.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(slice.length - 1, 1));
+    return { date: rets[i].date, vol_pct: std * Math.sqrt(252) * 100 };
+  });
+}
+
+function filterSeriesByRange(series, range) {
+  if (!series.length) return series;
+  const last = new Date(series[series.length - 1].date);
+  let cutoff;
+  if (range === 'YTD') { cutoff = new Date(last.getFullYear(), 0, 1); }
+  else if (range === '1Y') { cutoff = new Date(last); cutoff.setFullYear(cutoff.getFullYear() - 1); }
+  else { return series; }
+  return series.filter(x => new Date(x.date) >= cutoff);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SECTION 5 — COMPONENT LIBRARY
+// ════════════════════════════════════════════════════════════════════════════
+const fmt       = (n, dec=2) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US',{minimumFractionDigits:dec,maximumFractionDigits:dec});
+const fmtPct    = n => n == null ? '—' : (n >= 0 ? '+' : '') + Number(n).toFixed(2) + '%';
+const fmtPctRaw = n => n == null ? '—' : Number(n).toFixed(2) + '%';
+const badgeAssetClass = ac => ({
+  'Equity':'badge-equity','Fixed Income':'badge-fixed-income',
+  'Infrastructure':'badge-infrastructure','Commodity':'badge-commodity','Crypto':'badge-crypto'
+}[ac] || 'badge-default');
+const daysBetween = (d1, d2) => d1 && d2 ? Math.round((new Date(d2) - new Date(d1)) / 86400000) : null;
+
+function MetricCard(label, value, subtitle='', delta=null, variant='default', tooltipText='') {
+  const vc = variant !== 'default' ? ` ${variant}` : '';
+  const dHTML = delta ? `<div class="kpi-delta ${delta.cls}">${delta.text}<\/div>`
+               : subtitle ? `<div class="kpi-delta neutral">${subtitle}<\/div>` : '';
+  const tip = tooltipText ? ` title="${tooltipText}"` : '';
+  return `<div class="kpi-card${vc}"${tip}><div class="kpi-label">${label}<\/div><div class="kpi-value">${value}<\/div>${dHTML}<\/div>`;
+}
+
+function SectionHeader(title, subtitle='', actionsHTML='') {
+  return `<div class="section-header"><div class="section-header-left"><h2>${title}<\/h2>${subtitle?`<p>${subtitle}<\/p>`:''}<\/div>${actionsHTML?`<div class="section-header-actions">${actionsHTML}<\/div>`:''}<\/div>`;
+}
+
+function Badge(text, variant='default') {
+  return `<span class="badge badge-${variant}">${text}<\/span>`;
+}
+
+function FlagBadge(flag) {
+  const m = {EXIT_REVIEW:'danger',WATCH_60D:'danger',OVERWEIGHT:'warning',UNDERWEIGHT:'warning',
+             CONVICTION_HOLD:'info',TRIM_CANDIDATE:'warning',SPECULATIVE:'purple',
+             CORE:'success',SATELLITE:'blue',OPPORTUNISTIC:'default'};
+  return Badge(flag.replace(/_/g,' '), m[flag]||'default');
+}
+
+function TrafficLight(value, greenMax, amberMax, unit='', label='') {
+  const cls = value <= greenMax ? 'tl-green' : value <= amberMax ? 'tl-amber' : 'tl-red';
+  return `<span class="traffic-light"><span class="tl-dot ${cls}"><\/span><span>${label?label+': ':''  }${value!=null?value.toFixed(2):'—'}${unit}<\/span><\/span>`;
+}
+
+function PlaceholderSection(title, todoDesc) {
+  return `<!-- TODO: ${todoDesc} --><div class="placeholder-section"><div class="placeholder-icon">📝<\/div><div class="placeholder-title">${title}<\/div><div class="placeholder-desc">${todoDesc}<\/div><\/div>`;
+}
+
+function PolicyStatusCard(title, status, statusVariant, description, actionLabel='', actionHref='') {
+  const aHTML = actionLabel ? `<div class="policy-card-action"><a href="${actionHref}">${actionLabel}<\/a><\/div>` : '';
+  return `<div class="policy-card"><div class="policy-card-header"><span class="policy-card-title">${title}<\/span>${Badge(status,statusVariant)}<\/div><div class="policy-card-desc">${description}<\/div>${aHTML}<\/div>`;
+}
+
+function EmptyState(icon, title, message) {
+  return `<div class="empty-state"><div class="empty-icon">${icon}<\/div><strong>${title}<\/strong><p>${message}<\/p><\/div>`;
+}
+
+function DataTable(columns, rows, options={}) {
+  if (!rows.length) return EmptyState('📭','No data', options.emptyMessage||'No entries to display.');
+  const thead = `<tr>${columns.map(c=>`<th>${c.label}<\/th>`).join('')}<\/tr>`;
+  const tbody = rows.map(row => {
+    const rc = options.rowClass ? options.rowClass(row) : '';
+    const cells = columns.map(c=>`<td>${c.render?c.render(row[c.key],row):(row[c.key]??'—')}<\/td>`).join('');
+    const click = options.rowClick ? ` style="cursor:pointer" onclick="${options.rowClick(row)}"` : '';
+    return `<tr class="${rc}"${click}>${cells}<\/tr>`;
+  }).join('');
+  return `<div class="table-wrap"><table><thead>${thead}<\/thead><tbody>${tbody}<\/tbody><\/table><\/div>`;
+}
+
+function Tabs(containerId, tabDefs, defaultTab) {
+  const bar = tabDefs.map(t=>
+    `<button class="tab-btn${t.id===defaultTab?' active':''}" data-tab="${t.id}" onclick="switchTab('${containerId}','${t.id}')">${t.label}<\/button>`
+  ).join('');
+  const panels = tabDefs.map(t=>
+    `<div class="tab-panel${t.id===defaultTab?' active':''}" id="${containerId}-${t.id}">${t.render()}<\/div>`
+  ).join('');
+  return `<div id="${containerId}-wrap"><div class="tabs-bar">${bar}<\/div>${panels}<\/div>`;
+}
+
+function switchTab(containerId, tabId) {
+  document.querySelectorAll(`#${containerId}-wrap .tab-btn`).forEach(b=>b.classList.toggle('active',b.dataset.tab===tabId));
+  document.querySelectorAll(`#${containerId}-wrap .tab-panel`).forEach(p=>p.classList.toggle('active',p.id===`${containerId}-${tabId}`));
+}
+
+function RangePills(currentRange, onSelectFn) {
+  return `<div class="range-pills">${['YTD','1Y','Since Inception'].map(r=>
+    `<button class="range-pill${r===currentRange?' active':''}" onclick="${onSelectFn}('${r}')">${r}<\/button>`
+  ).join('')}<\/div>`;
+}
+
+function chartDefaults() {
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  return {
+    grid: dark ? '#21262d' : '#e5e4e0',
+    text: dark ? '#8b949e' : '#7a7974',
+    tooltip_bg: dark ? '#1c2128' : '#ffffff',
+    tooltip_border: dark ? '#30363d' : '#d4d1ca',
+  };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SECTION 6 — ROUTER
+// ════════════════════════════════════════════════════════════════════════════
+const ROUTES = {
+  '/overview':    renderOverview,
+  '/dashboard':   renderDashboard,
+  '/performance': renderPerformance,
+  '/risk':        renderRisk,
+  '/positions':   renderPositions,
+  '/trades':      renderTrades,
+  '/process':     renderProcess,
+  '/governance':  renderGovernance,
+  '/research':    renderResearch,
+  '/methodology': renderMethodology,
+  '/downloads':   renderDownloads,
+  '/about':       renderAbout,
+};
+
+function getRoute() {
+  const hash = window.location.hash || '#/overview';
+  const path = hash.replace('#', '');
+  if (path.startsWith('/positions/')) return { handler: renderPositionDetail, param: path.split('/')[2] };
+  return { handler: ROUTES[path] || renderOverview, param: null };
+}
+
+function navigate(path) { window.location.hash = path; }
+
+function updateActiveNav(path) {
+  const base = '/' + path.split('/')[1];
+  document.querySelectorAll('.main-nav a, .mobile-nav a').forEach(a => {
+    const href = a.getAttribute('href').replace('#','');
+    a.classList.toggle('active', href === base || href === path);
+  });
+}
+
+window.addEventListener('hashchange', () => {
+  const { handler, param } = getRoute();
+  const path = (window.location.hash || '#/overview').replace('#','');
+  updateActiveNav(path);
+  const root = document.getElementById('appRoot');
+  root.innerHTML = '';
+  handler(root, param);
+  window.scrollTo(0, 0);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// SECTION 7 — PAGE STUB RENDERERS
+// (Prompts 3, 4, 5 will replace these with full implementations)
+// ════════════════════════════════════════════════════════════════════════════
+function renderOverview(root)      { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Overview — coming in next prompt<\/p>'; }
+function renderDashboard(root)     { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Dashboard — coming in next prompt<\/p>'; }
+function renderPerformance(root)   { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Performance — coming in next prompt<\/p>'; }
+function renderRisk(root)          { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Risk — coming in next prompt<\/p>'; }
+function renderPositions(root)     { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Positions — coming in next prompt<\/p>'; }
+function renderPositionDetail(root, ticker) { root.innerHTML = `<p style="padding:2rem;color:var(--color-text-muted)">Position: ${ticker}<\/p>`; }
+function renderTrades(root)        { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Trades — coming in next prompt<\/p>'; }
+function renderProcess(root)       { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Process — coming in next prompt<\/p>'; }
+function renderGovernance(root)    { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Governance — coming in next prompt<\/p>'; }
+function renderResearch(root)      { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Research — coming in next prompt<\/p>'; }
+function renderMethodology(root)   { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Methodology — coming in next prompt<\/p>'; }
+function renderDownloads(root)     { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Downloads — coming in next prompt<\/p>'; }
+function renderAbout(root)         { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">About — coming in next prompt<\/p>'; }
+
+// ════════════════════════════════════════════════════════════════════════════
+// SECTION 8 — HAMBURGER & APP INIT
+// ════════════════════════════════════════════════════════════════════════════
 document.getElementById('hamburgerBtn').addEventListener('click', () => {
   document.getElementById('mobileNav').classList.toggle('open');
 });
+
+async function init() {
+  try {
+    await Promise.all([fetchPortfolio(), fetchTradeRationale()]);
+    document.getElementById('loadingScreen').classList.add('hidden');
+    document.getElementById('lastUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+    const { handler, param } = getRoute();
+    const path = (window.location.hash || '#/overview').replace('#','');
+    updateActiveNav(path);
+    handler(document.getElementById('appRoot'), param);
+  } catch(e) {
+    document.getElementById('loadingScreen').classList.add('hidden');
+    const b = document.getElementById('errorBanner');
+    b.style.display = 'block';
+    b.textContent = 'Could not load portfolio data: ' + e.message;
+  }
+}
+
+init();
 </script>
 </body>
 </html>
