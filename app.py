@@ -62,6 +62,18 @@ def normalize_lse_price(raw_price, avg_price_gbp):
         return raw_price / 100
     return raw_price
 
+def strip_outliers(df, threshold=0.15):
+    """
+    Replace any single-day price move > threshold (15%) with NaN, then
+    forward-fill (then back-fill for the first row) so the bad print is
+    replaced by the last known-good price.
+    Applied to every column including FX pairs and the benchmark.
+    """
+    pct = df.pct_change().abs()
+    df = df.mask(pct > threshold)
+    df = df.ffill().bfill()
+    return df
+
 def get_sheet_data():
     creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
     if creds_json:
@@ -260,7 +272,14 @@ def build_positions(trades, fx_rates, manual_map):
     return open_positions, closed_trades
 
 def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
-    """Reconstruct daily NAV from inception using yfinance historical prices."""
+    """Reconstruct daily NAV from inception using yfinance historical prices.
+
+    Historical FX: GBPUSD=X and EURUSD=X are downloaded in the same batch as
+    all other tickers and looked up per-day inside the loop, so the NAV curve
+    uses the actual exchange rate that was prevailing on each date rather than
+    today's spot rate.  The live fx_rates dict is kept as a fallback for any
+    date where the historical series has no data.
+    """
     inception = datetime.strptime(cfg["inception_date"], "%Y-%m-%d")
     today     = datetime.today()
     starting  = cfg["starting_capital"]
@@ -270,7 +289,9 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
         if t.get("yf_ticker") and t.get("ticker"):
             ticker_map[t["ticker"]] = t.get("yf_ticker")
 
-    all_tickers = list(set(ticker_map.values())) + ["GBPUSD=X", "EURUSD=X", benchmark_ticker]
+    # Always include FX pairs so we have historical rates
+    fx_tickers = ["GBPUSD=X", "EURUSD=X"]
+    all_tickers = list(set(ticker_map.values())) + fx_tickers + [benchmark_ticker]
     raw = yf.download(all_tickers, start=inception.strftime("%Y-%m-%d"),
                       end=(today + timedelta(days=1)).strftime("%Y-%m-%d"),
                       auto_adjust=True, progress=False)
@@ -280,15 +301,43 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
     else:
         prices = raw[["Close"]] if "Close" in raw.columns else raw
 
-    prices = prices.ffill().bfill()
+    # Apply 15% single-day outlier filter across ALL columns (equities + FX + benchmark)
+    prices = strip_outliers(prices, threshold=0.15)
+
+    # Extract historical FX series for per-day lookup inside the loop
+    def get_hist_fx(col):
+        if col in prices.columns:
+            return prices[col]
+        return None
+
+    hist_gbpusd = get_hist_fx("GBPUSD=X")
+    hist_eurusd = get_hist_fx("EURUSD=X")
+
+    def fx_on_date(currency, dt, no_fx=False):
+        """Return the USD conversion rate for a given currency on a given date."""
+        if no_fx or currency == "USD":
+            return 1.0
+        if currency == "GBP":
+            series  = hist_gbpusd
+            fallback = fx_rates.get("GBP", 1.0)
+        elif currency == "EUR":
+            series  = hist_eurusd
+            fallback = fx_rates.get("EUR", 1.0)
+        else:
+            return 1.0
+        if series is None:
+            return fallback
+        try:
+            val = float(series.loc[:dt].iloc[-1])
+            return val if pd.notna(val) else fallback
+        except:
+            return fallback
 
     from collections import defaultdict
     events_by_date = defaultdict(list)
     for t in trades:
         events_by_date[t["date"]].append(t)
 
-    # Pre-compute avg costs per ticker for normalize_lse_price reference
-    # We track this as we process events chronologically
     holdings = {}  # ticker -> {qty, yf_ticker, tv_no_fx, avg_cost_gbp}
     cash = starting
     nav_series = []
@@ -308,11 +357,13 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
             ytk      = e.get("yf_ticker", tk)
             currency = get_currency(ytk)
             no_fx    = _is_tv_no_fx(e)
-            fx_r     = fx_rates.get(currency, 1.0)
+
+            # Use historical FX rate for cash-flow entries
+            fx_r = fx_on_date(currency, dt, no_fx=no_fx)
 
             # Sheet prices for LSE are in pence — convert to GBP for cash flow
             price_gbp = price / 100 if is_lse(ytk) else price
-            p_usd     = price_gbp * (1.0 if no_fx else fx_r)
+            p_usd     = price_gbp * fx_r
 
             if action == "OPEN":
                 holdings[tk] = {
@@ -345,9 +396,9 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
         # Portfolio value on this date
         port_val = cash
         for tk, h in holdings.items():
-            ytk      = h["yf_ticker"]
-            currency = get_currency(ytk)
-            fx_r     = 1.0 if h.get("tv_no_fx", False) else fx_rates.get(currency, 1.0)
+            ytk          = h["yf_ticker"]
+            currency     = get_currency(ytk)
+            fx_r         = fx_on_date(currency, dt, no_fx=h.get("tv_no_fx", False))
             avg_cost_gbp = h.get("avg_cost_gbp", 0)
             try:
                 col = ytk
