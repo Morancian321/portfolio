@@ -534,7 +534,8 @@ def portfolio():
 
         total_mv    = sum(p["mv_usd"] for p in open_pos)
         total_cost  = sum(p["cost_usd"] for p in open_pos)
-        cash        = cfg["starting_capital"] - total_cost
+        realised_total = sum(t.get("realised_pnl_usd", 0) for t in closed)
+        cash        = cfg["starting_capital"] - total_cost + realised_total
         total_val   = total_mv + max(cash, 0)
 
         for p in open_pos:
@@ -583,7 +584,6 @@ def portfolio():
         )
         metrics = calc_metrics(nav_series, cfg["starting_capital"], rf_annual=rf_rate, closed_trades=closed)
 
-        realised_total = sum(t.get("realised_pnl_usd", 0) for t in closed)
 
         # Compute total_pnl as single source of truth for both the dollar figure
         # and the percentage. This ensures total_return_pct is always consistent
