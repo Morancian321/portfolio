@@ -185,7 +185,6 @@ def build_positions(trades, fx_rates, manual_map):
 
             elif action == "REDUCE":
                 avg = cost_basis / qty_held if qty_held else price
-                realised_local = (price - avg) * qty
                 cost_basis -= avg * qty
                 qty_held   -= qty
 
@@ -537,12 +536,15 @@ def portfolio():
         total_mv   = sum(p["mv_usd"] for p in open_pos)
         total_cost = sum(p["cost_usd"] for p in open_pos)
 
-        # FIX: cash is simply undeployed capital — what's not in open positions.
-        # total_cost already reflects the reduced quantity after any REDUCE trades,
-        # so there is no need to add realised_total here. Doing so previously
-        # double-counted disposal proceeds, inflating cash, portfolio value,
-        # total P&L, and total return.
-        cash      = cfg["starting_capital"] - total_cost
+        # Realised total must be computed BEFORE cash so proceeds from
+        # REDUCE/CLOSE trades are included. Without this, cash is understated
+        # by exactly the realised P&L on any disposal.
+        realised_total = sum(t.get("realised_pnl_usd", 0) for t in closed)
+
+        # cash = undeployed capital + proceeds returned from disposals.
+        # total_cost reflects only the remaining open position cost basis,
+        # so realised_total (proceeds net of cost) must be added back.
+        cash      = cfg["starting_capital"] - total_cost + realised_total
         total_val = total_mv + max(cash, 0)
 
         for p in open_pos:
@@ -570,7 +572,7 @@ def portfolio():
             for band, policy in SIZING_POLICY.items():
                 if ticker in policy["tickers"]:
                     p["sizing_band"]   = band
-                    p["sizing_breach"] = not (policy["min_pct"] <= weight_pct <= policy["max_pct"])
+                    p["sizing_breach\"] = not (policy["min_pct"] <= weight_pct <= policy["max_pct"])
                     break
             else:
                 p["sizing_band"]   = "Unclassified"
@@ -590,9 +592,6 @@ def portfolio():
         )
         metrics = calc_metrics(nav_series, cfg["starting_capital"], rf_annual=rf_rate, closed_trades=closed)
 
-        # FIX: total_pnl and total_return_pct derived from total_val — single
-        # source of truth, consistent with the portfolio value card.
-        realised_total      = sum(t.get("realised_pnl_usd", 0) for t in closed)
         displayed_total_pnl = round(total_val - cfg["starting_capital"], 2)
         metrics["total_return_pct"] = round(
             (displayed_total_pnl / cfg["starting_capital"] * 100), 2
