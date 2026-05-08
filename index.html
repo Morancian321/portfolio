@@ -213,6 +213,10 @@ tr.row-loss td:last-child{color:var(--color-error)}
 .step-num{font-size:1.25rem;font-weight:700;color:var(--color-primary);margin-bottom:.25rem}
 .heatmap-table td{width:60px;text-align:center;padding:.4rem .3rem;font-size:.75rem;font-variant-numeric:tabular-nums;border-radius:3px}
 .heatmap-table th{font-size:.7rem;padding:.4rem .3rem;text-align:center}
+
+/* ── Dashboard — Band Chart ──────────────────────────────────────────────────── */
+.dash-alloc-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin-bottom:2rem}
+@media(max-width:768px){.dash-alloc-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -582,6 +586,20 @@ let overviewNavChart = null;
 let overviewAllocChart = null;
 window._overviewRange = window._overviewRange || 'Since Inception';
 
+// Dashboard chart module-level variables
+let dashNavChart = null;
+let dashAllocChart = null;
+let dashBandChart = null;
+
+// Dashboard range state
+window._dashRange = window._dashRange || 'Since Inception';
+
+function setDashRange(range) {
+  window._dashRange = range;
+  const root = document.getElementById('appRoot');
+  if (root) renderDashboard(root);
+}
+
 function destroyChartSafe(chartRef) {
   if (chartRef && typeof chartRef.destroy === 'function') chartRef.destroy();
 }
@@ -768,10 +786,336 @@ function setOverviewRange(range) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// SECTION 8 — OTHER PAGE STUB RENDERERS
+// SECTION 8 — DASHBOARD (FULL IMPLEMENTATION)
+// ════════════════════════════════════════════════════════════════════════════
+function renderDashboard(root) {
+  const summary  = getSummary();
+  const metrics  = getMetrics();
+  const navSeries   = getNavSeries();
+  const benchSeries = getBenchmarkSeries();
+  const allocation  = getAllocation();
+  const currentRange = window._dashRange || 'Since Inception';
+
+  // ── Recovery status helper ────────────────────────────────────────────────
+  const recovery = metrics.recovery_status || { status: '—', days_since_trough: '—' };
+  const recoveryVariant = {
+    'At Peak':    'success',
+    'Recovered':  'info',
+    'Recovering': 'warning'
+  }[recovery.status] || 'default';
+
+  // ── Cash logic ────────────────────────────────────────────────────────────
+  const cashPct = summary.current_value ? (summary.cash / summary.current_value) * 100 : 0;
+  const cashVariant  = cashPct > 3 ? 'warning' : 'default';
+  const cashSubtitle = cashPct > 3
+    ? 'Consider deploying — see Governance'
+    : fmtPctRaw(cashPct) + ' of portfolio';
+
+  // ── Total P&L helpers ─────────────────────────────────────────────────────
+  const pnlPos = (summary.total_pnl || 0) >= 0;
+  const retPos = (metrics.total_return_pct || 0) >= 0;
+
+  // ── Hit rate & trade stats ────────────────────────────────────────────────
+  const hitPos = (metrics.hit_rate_pct || 0) > 50;
+
+  // ── Build HTML ────────────────────────────────────────────────────────────
+  root.innerHTML = `
+    ${SectionHeader('Dashboard', 'Full portfolio analytics')}
+
+    <!-- KPI Row 1: Primary -->
+    <div class="kpi-grid section-gap" style="margin-bottom:1rem">
+      ${MetricCard(
+        'Portfolio Value',
+        fmt(summary.current_value, 0),
+        'Since ' + (summary.inception_date || 'inception')
+      )}
+      ${MetricCard(
+        'Total P&amp;L',
+        fmt(summary.total_pnl, 2),
+        '',
+        { text: fmtPct(metrics.total_return_pct), cls: pnlPos ? 'up' : 'down' },
+        pnlPos ? 'success' : 'danger'
+      )}
+      ${MetricCard(
+        'Total Return',
+        fmtPct(metrics.total_return_pct),
+        'Since inception',
+        null,
+        retPos ? 'success' : 'danger'
+      )}
+      ${MetricCard(
+        'Cash',
+        fmt(summary.cash, 0),
+        cashSubtitle,
+        null,
+        cashVariant
+      )}
+    </div>
+
+    <!-- KPI Row 2: Risk & Performance -->
+    <div class="kpi-grid section-gap" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr));margin-bottom:1rem">
+      ${MetricCard(
+        'Sharpe Ratio',
+        metrics.Sharpe_ratio != null ? Number(metrics.Sharpe_ratio).toFixed(2) : '—',
+        'Risk-adjusted return',
+        null,
+        'default',
+        '(Mean excess return / Std dev) × √252'
+      )}
+      ${MetricCard(
+        'Sortino Ratio',
+        metrics.sortino_ratio != null ? Number(metrics.sortino_ratio).toFixed(2) : '—',
+        'Downside risk-adjusted',
+        null,
+        'default',
+        '(Mean excess return / Downside std) × √252'
+      )}
+      ${MetricCard(
+        'Max Drawdown',
+        metrics.max_drawdown_pct != null ? '-' + Number(metrics.max_drawdown_pct).toFixed(2) + '%' : '—',
+        'Peak to trough',
+        null,
+        metrics.max_drawdown_pct > 10 ? 'danger' : 'default'
+      )}
+      <div class="kpi-card">
+        <div class="kpi-label">30d Volatility</div>
+        <div class="kpi-value" style="font-size:1.1rem;margin-top:.1rem">
+          ${TrafficLight(Number(metrics.rolling_30d_vol || 0), 10, 15, '%')}
+        </div>
+        <div class="kpi-delta neutral">Annualised, rolling</div>
+      </div>
+      ${MetricCard(
+        'Recovery',
+        recovery.status,
+        recovery.days_since_trough + ' days since trough',
+        null,
+        recoveryVariant
+      )}
+    </div>
+
+    <!-- KPI Row 3: Trade Stats -->
+    <div class="kpi-grid section-gap" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr));margin-bottom:2rem">
+      ${MetricCard(
+        'Open Positions',
+        getOpenPositions().length
+      )}
+      ${MetricCard(
+        'Hit Rate',
+        metrics.hit_rate_pct != null ? Number(metrics.hit_rate_pct).toFixed(1) + '%' : '—',
+        getClosedTrades().length + ' closed trades',
+        null,
+        hitPos ? 'success' : 'warning'
+      )}
+      ${MetricCard(
+        'Avg Gain',
+        fmt(metrics.avg_gain_usd, 0),
+        '',
+        null,
+        'success'
+      )}
+      ${MetricCard(
+        'Avg Loss',
+        metrics.avg_loss_usd != null ? '-' + fmt(Math.abs(metrics.avg_loss_usd), 0) : '—',
+        '',
+        null,
+        'danger'
+      )}
+      ${MetricCard(
+        'Realised P&amp;L',
+        fmt(metrics.total_realised_pnl, 0),
+        '',
+        null,
+        (metrics.total_realised_pnl || 0) >= 0 ? 'success' : 'danger'
+      )}
+    </div>
+
+    <!-- NAV Chart -->
+    <div class="chart-card section-gap">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
+        <div class="chart-title" style="margin-bottom:0">NAV vs SPY — ${currentRange}</div>
+        <button class="btn btn-outline" style="font-size:.7rem" id="navBenchmarkInfo"
+                title="Note: SPY is used as a secondary benchmark. A blended defensive benchmark will be implemented in a future update.">
+          ⓘ Benchmark
+        </button>
+      </div>
+      ${RangePills(currentRange, 'setDashRange')}
+      <div class="chart-wrap" style="height:300px"><canvas id="dashNavCanvas"></canvas></div>
+    </div>
+
+    <!-- Allocation Section -->
+    <div class="dash-alloc-grid">
+      <div class="chart-card">
+        <div class="chart-title">Asset Allocation</div>
+        <div class="chart-wrap"><canvas id="dashAllocCanvas"></canvas></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-title">Drawdown Band</div>
+        <div class="chart-wrap"><canvas id="dashBandCanvas"></canvas></div>
+      </div>
+    </div>
+  `;
+
+  // ── NAV Chart ─────────────────────────────────────────────────────────────
+  const filteredNav   = filterSeriesByRange(navSeries, currentRange);
+  const filteredBench = filterSeriesByRange(benchSeries, currentRange);
+  const c = chartDefaults();
+
+  destroyChartSafe(dashNavChart);
+  dashNavChart = null;
+  const navCtx = document.getElementById('dashNavCanvas')?.getContext('2d');
+  if (navCtx) {
+    if (filteredNav.length === 0 && filteredBench.length === 0) {
+      navCtx.canvas.parentElement.innerHTML = EmptyState('📈', 'No NAV data', 'NAV series is empty for this range.');
+    } else {
+      dashNavChart = new Chart(navCtx, {
+        type: 'line',
+        data: {
+          datasets: [
+            {
+              label: 'Portfolio',
+              data: filteredNav.map(x => ({ x: x.date, y: x.value })),
+              borderColor: '#4f98a3',
+              backgroundColor: 'rgba(79,152,163,.08)',
+              borderWidth: 2,
+              pointRadius: 0,
+              fill: true,
+              tension: .3
+            },
+            {
+              label: 'SPY',
+              data: filteredBench.map(x => ({ x: x.date, y: x.value })),
+              borderColor: '#d29922',
+              borderWidth: 1.5,
+              borderDash: [4,3],
+              pointRadius: 0,
+              fill: false,
+              tension: .3
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode:'index', intersect:false },
+          plugins: {
+            legend: { labels:{ color:c.text, font:{ size:11 }, boxWidth:24, padding:16 } },
+            tooltip: {
+              backgroundColor: c.tooltip_bg,
+              borderColor: c.tooltip_border,
+              borderWidth: 1,
+              titleColor: c.text,
+              bodyColor: c.text,
+              callbacks: {
+                label: ctx => ' ' + ctx.dataset.label + ': $' + Number(ctx.parsed.y).toLocaleString('en-US',{ minimumFractionDigits:2, maximumFractionDigits:2 })
+              }
+            }
+          },
+          scales: {
+            x: { type:'time', time:{ unit:'month' }, grid:{ color:c.grid }, ticks:{ color:c.text, font:{ size:11 } } },
+            y: { grid:{ color:c.grid }, ticks:{ color:c.text, font:{ size:11 }, callback: v => '$' + Number(v).toLocaleString('en-US',{ maximumFractionDigits:0 }) } }
+          }
+        }
+      });
+    }
+  }
+
+  // ── Allocation Doughnut ───────────────────────────────────────────────────
+  destroyChartSafe(dashAllocChart);
+  dashAllocChart = null;
+  const allocCtx = document.getElementById('dashAllocCanvas')?.getContext('2d');
+  if (allocCtx) {
+    const allocLabels = Object.keys(allocation || {});
+    const allocVals   = Object.values(allocation || {});
+    if (!allocLabels.length) {
+      allocCtx.canvas.parentElement.innerHTML = EmptyState('🥧', 'No allocation data', 'Allocation data is not available.');
+    } else {
+      dashAllocChart = new Chart(allocCtx, {
+        type: 'doughnut',
+        data: {
+          labels: allocLabels,
+          datasets: [{
+            data: allocVals,
+            backgroundColor: allocPalette(allocLabels.length),
+            borderWidth: 2,
+            borderColor: document.documentElement.getAttribute('data-theme') === 'dark' ? '#161b22' : '#f9f8f5'
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          cutout: '62%',
+          plugins: {
+            legend: { position:'bottom', labels:{ color:c.text, font:{ size:11 }, padding:12, boxWidth:12 } },
+            tooltip: {
+              backgroundColor: c.tooltip_bg,
+              borderColor: c.tooltip_border,
+              borderWidth: 1,
+              titleColor: c.text,
+              bodyColor: c.text,
+              callbacks: { label: ctx => ' ' + ctx.label + ': ' + Number(ctx.parsed).toFixed(1) + '%' }
+            }
+          }
+        }
+      });
+    }
+  }
+
+  // ── Drawdown Band Chart ───────────────────────────────────────────────────
+  destroyChartSafe(dashBandChart);
+  dashBandChart = null;
+  const bandCtx = document.getElementById('dashBandCanvas')?.getContext('2d');
+  if (bandCtx) {
+    const ddSeries = computeDrawdownSeries(filterSeriesByRange(navSeries, currentRange));
+    if (!ddSeries.length) {
+      bandCtx.canvas.parentElement.innerHTML = EmptyState('📉', 'No drawdown data', 'Insufficient NAV data for this range.');
+    } else {
+      dashBandChart = new Chart(bandCtx, {
+        type: 'line',
+        data: {
+          datasets: [{
+            label: 'Drawdown %',
+            data: ddSeries.map(x => ({ x: x.date, y: -x.drawdown_pct })),
+            borderColor: '#f85149',
+            backgroundColor: 'rgba(248,81,73,.10)',
+            borderWidth: 1.5,
+            pointRadius: 0,
+            fill: true,
+            tension: .3
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode:'index', intersect:false },
+          plugins: {
+            legend: { labels:{ color:c.text, font:{ size:11 }, boxWidth:24, padding:16 } },
+            tooltip: {
+              backgroundColor: c.tooltip_bg,
+              borderColor: c.tooltip_border,
+              borderWidth: 1,
+              titleColor: c.text,
+              bodyColor: c.text,
+              callbacks: { label: ctx => ' Drawdown: ' + Number(ctx.parsed.y).toFixed(2) + '%' }
+            }
+          },
+          scales: {
+            x: { type:'time', time:{ unit:'month' }, grid:{ color:c.grid }, ticks:{ color:c.text, font:{ size:11 } } },
+            y: {
+              grid:{ color:c.grid },
+              ticks:{ color:c.text, font:{ size:11 }, callback: v => v.toFixed(1) + '%' },
+              max: 0
+            }
+          }
+        }
+      });
+    }
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SECTION 9 — OTHER PAGE STUB RENDERERS
 // (Prompts 3, 4, 5 will replace these with full implementations)
 // ════════════════════════════════════════════════════════════════════════════
-function renderDashboard(root)     { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Dashboard — coming in next prompt<\/p>'; }
 function renderPerformance(root)   { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Performance — coming in next prompt<\/p>'; }
 function renderRisk(root)          { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Risk — coming in next prompt<\/p>'; }
 function renderPositions(root)     { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Positions — coming in next prompt<\/p>'; }
@@ -785,7 +1129,7 @@ function renderDownloads(root)     { root.innerHTML = '<p style="padding:2rem;co
 function renderAbout(root)         { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">About — coming in next prompt<\/p>'; }
 
 // ════════════════════════════════════════════════════════════════════════════
-// SECTION 9 — HAMBURGER & APP INIT
+// SECTION 10 — HAMBURGER & APP INIT
 // ════════════════════════════════════════════════════════════════════════════
 document.getElementById('hamburgerBtn').addEventListener('click', () => {
   document.getElementById('mobileNav').classList.toggle('open');
