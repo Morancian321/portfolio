@@ -184,10 +184,6 @@ def build_positions(trades, fx_rates, manual_map):
                 qty_held   += qty
 
             elif action == "REDUCE":
-                # --- FIX: convert REDUCE realised P&L to USD ---
-                # Previously this stored raw 'realised_pnl' (in local currency, no FX),
-                # so realised_total = sum(.get('realised_pnl_usd', 0)) silently returned
-                # 0 for every partial sell, excluding it from all KPIs and cash.
                 avg = cost_basis / qty_held if qty_held else price
                 realised_local = (price - avg) * qty
                 cost_basis -= avg * qty
@@ -205,20 +201,20 @@ def build_positions(trades, fx_rates, manual_map):
                     avg_usd   = avg * effective_fx
                     price_usd = price * effective_fx
 
-                realised_usd   = (price_usd - avg_usd) * qty
-                cost_usd_sold  = avg_usd * qty  # proceeds cost basis (for cash tracking)
+                realised_usd  = (price_usd - avg_usd) * qty
+                cost_usd_sold = avg_usd * qty
 
                 closed_trades.append({
-                    "ticker":          ticker,
-                    "name":            name,
-                    "qty":             qty,
-                    "entry_price":     round(avg_usd / effective_fx, 4) if effective_fx else round(avg, 4),
-                    "exit_price":      round(price_usd / effective_fx, 4) if effective_fx else round(price, 4),
+                    "ticker":           ticker,
+                    "name":             name,
+                    "qty":              qty,
+                    "entry_price":      round(avg_usd / effective_fx, 4) if effective_fx else round(avg, 4),
+                    "exit_price":       round(price_usd / effective_fx, 4) if effective_fx else round(price, 4),
                     "realised_pnl_usd": round(realised_usd, 2),
-                    "cost_usd_sold":   round(cost_usd_sold, 2),
-                    "date":            e.get("date"),
-                    "yf_ticker":       yf_ticker,
-                    "asset_class":     asset_class,
+                    "cost_usd_sold":    round(cost_usd_sold, 2),
+                    "date":             e.get("date"),
+                    "yf_ticker":        yf_ticker,
+                    "asset_class":      asset_class,
                 })
 
             elif action == "CLOSE":
@@ -227,7 +223,6 @@ def build_positions(trades, fx_rates, manual_map):
 
                 currency = get_currency(yf_ticker)
                 fx       = fx_rates.get(currency, 1.0)
-                # Sheet prices for LSE are in pence — convert to GBP for USD calc
                 if is_lse(yf_ticker):
                     avg   /= 100
                     price /= 100
@@ -252,15 +247,12 @@ def build_positions(trades, fx_rates, manual_map):
 
             avg_price = cost_basis / qty_held
 
-            # For LSE tickers, sheet prices are stored in pence — convert to GBP
             if is_lse(yf_ticker):
                 ap = avg_price / 100
             else:
                 ap = avg_price
 
             if live_price is not None:
-                # Normalize live price: yfinance .L tickers inconsistently
-                # return pence or GBP — use avg cost as sanity reference
                 if is_lse(yf_ticker):
                     lp = normalize_lse_price(live_price, ap)
                 else:
@@ -297,14 +289,7 @@ def build_positions(trades, fx_rates, manual_map):
     return open_positions, closed_trades
 
 def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
-    """Reconstruct daily NAV from inception using yfinance historical prices.
-
-    Historical FX: GBPUSD=X and EURUSD=X are downloaded in the same batch as
-    all other tickers and looked up per-day inside the loop, so the NAV curve
-    uses the actual exchange rate that was prevailing on each date rather than
-    today's spot rate.  The live fx_rates dict is kept as a fallback for any
-    date where the historical series has no data.
-    """
+    """Reconstruct daily NAV from inception using yfinance historical prices."""
     inception = datetime.strptime(cfg["inception_date"], "%Y-%m-%d")
     today     = datetime.today()
     starting  = cfg["starting_capital"]
@@ -314,7 +299,6 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
         if t.get("yf_ticker") and t.get("ticker"):
             ticker_map[t["ticker"]] = t.get("yf_ticker")
 
-    # Always include FX pairs so we have historical rates
     fx_tickers = ["GBPUSD=X", "EURUSD=X"]
     all_tickers = list(set(ticker_map.values())) + fx_tickers + [benchmark_ticker]
     raw = yf.download(all_tickers, start=inception.strftime("%Y-%m-%d"),
@@ -326,10 +310,8 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
     else:
         prices = raw[["Close"]] if "Close" in raw.columns else raw
 
-    # Apply 15% single-day outlier filter across ALL columns (equities + FX + benchmark)
     prices = strip_outliers(prices, threshold=0.15)
 
-    # Extract historical FX series for per-day lookup inside the loop
     def get_hist_fx(col):
         if col in prices.columns:
             return prices[col]
@@ -339,14 +321,13 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
     hist_eurusd = get_hist_fx("EURUSD=X")
 
     def fx_on_date(currency, dt, no_fx=False):
-        """Return the USD conversion rate for a given currency on a given date."""
         if no_fx or currency == "USD":
             return 1.0
         if currency == "GBP":
-            series  = hist_gbpusd
+            series   = hist_gbpusd
             fallback = fx_rates.get("GBP", 1.0)
         elif currency == "EUR":
-            series  = hist_eurusd
+            series   = hist_eurusd
             fallback = fx_rates.get("EUR", 1.0)
         else:
             return 1.0
@@ -363,7 +344,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
     for t in trades:
         events_by_date[t["date"]].append(t)
 
-    holdings = {}  # ticker -> {qty, yf_ticker, tv_no_fx, avg_cost_gbp}
+    holdings = {}
     cash = starting
     nav_series = []
     bench_series = []
@@ -383,10 +364,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
             currency = get_currency(ytk)
             no_fx    = _is_tv_no_fx(e)
 
-            # Use historical FX rate for cash-flow entries
-            fx_r = fx_on_date(currency, dt, no_fx=no_fx)
-
-            # Sheet prices for LSE are in pence — convert to GBP for cash flow
+            fx_r      = fx_on_date(currency, dt, no_fx=no_fx)
             price_gbp = price / 100 if is_lse(ytk) else price
             p_usd     = price_gbp * fx_r
 
@@ -417,10 +395,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
                         del holdings[tk]
                     else:
                         holdings[tk]["qty"] -= close_qty
-                        # avg_cost_gbp is unchanged on a partial sell (FIFO cost basis
-                        # remains the same per unit; only qty is reduced)
 
-        # Portfolio value on this date
         port_val = cash
         for tk, h in holdings.items():
             ytk          = h["yf_ticker"]
@@ -438,7 +413,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
                     p_usd = p_gbp * fx_r
                     port_val += p_usd * h["qty"]
                 else:
-                    port_val += h["qty"]  # fallback
+                    port_val += h["qty"]
             except:
                 pass
 
@@ -524,8 +499,7 @@ def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[]
         "current_drawdown_pct": current_drawdown_pct,
     }
 
-    # --- Hit Rate, Avg Gain/Loss, Total Realised PnL (from closed_trades) ---
-    # Includes both full CLOSE and partial REDUCE trades (all have realised_pnl_usd)
+    # --- Hit Rate, Avg Gain/Loss, Total Realised PnL ---
     winners = [t for t in closed_trades if t.get("realised_pnl_usd", 0) > 0]
     losers  = [t for t in closed_trades if t.get("realised_pnl_usd", 0) <= 0]
     hit_rate_pct = round(len(winners) / len(closed_trades) * 100, 1) if closed_trades else 0
@@ -560,16 +534,21 @@ def portfolio():
 
         open_pos, closed = build_positions(trades, fx_rates, manual_map)
 
-        total_mv    = sum(p["mv_usd"] for p in open_pos)
-        total_cost  = sum(p["cost_usd"] for p in open_pos)
-        realised_total = sum(t.get("realised_pnl_usd", 0) for t in closed)
-        cash        = cfg["starting_capital"] - total_cost + realised_total
-        total_val   = total_mv + max(cash, 0)
+        total_mv   = sum(p["mv_usd"] for p in open_pos)
+        total_cost = sum(p["cost_usd"] for p in open_pos)
+
+        # FIX: cash is simply undeployed capital — what's not in open positions.
+        # total_cost already reflects the reduced quantity after any REDUCE trades,
+        # so there is no need to add realised_total here. Doing so previously
+        # double-counted disposal proceeds, inflating cash, portfolio value,
+        # total P&L, and total return.
+        cash      = cfg["starting_capital"] - total_cost
+        total_val = total_mv + max(cash, 0)
 
         for p in open_pos:
             p["weight_pct"] = round(p["mv_usd"] / total_val * 100, 2) if total_val else 0
 
-        # --- Flags and Sizing Band (computed after weight_pct is set) ---
+        # --- Flags and Sizing Band ---
         for p in open_pos:
             ticker      = p["ticker"]
             asset_class = p["asset_class"]
@@ -597,13 +576,12 @@ def portfolio():
                 p["sizing_band"]   = "Unclassified"
                 p["sizing_breach"] = False
 
-        # Build allocation dict: each asset class as % of total portfolio value (incl. cash)
+        # Build allocation dict
         alloc = {}
         for p in open_pos:
             ac = p["asset_class"]
             alloc[ac] = round(alloc.get(ac, 0) + p["mv_usd"] / total_val * 100, 2)
 
-        # Add cash as its own allocation slice so the pie sums to 100%
         if cash > 0 and total_val > 0:
             alloc["Cash"] = round(cash / total_val * 100, 2)
 
@@ -612,11 +590,10 @@ def portfolio():
         )
         metrics = calc_metrics(nav_series, cfg["starting_capital"], rf_annual=rf_rate, closed_trades=closed)
 
-
-        # Compute total_pnl as single source of truth for both the dollar figure
-        # and the percentage. This ensures total_return_pct is always consistent
-        # with the displayed total_pnl dollar value.
-        displayed_total_pnl = round(total_mv - total_cost + realised_total, 2)
+        # FIX: total_pnl and total_return_pct derived from total_val — single
+        # source of truth, consistent with the portfolio value card.
+        realised_total      = sum(t.get("realised_pnl_usd", 0) for t in closed)
+        displayed_total_pnl = round(total_val - cfg["starting_capital"], 2)
         metrics["total_return_pct"] = round(
             (displayed_total_pnl / cfg["starting_capital"] * 100), 2
         ) if cfg["starting_capital"] else 0
@@ -665,15 +642,10 @@ def price_history():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# TODO: Create a 'trade_rationale' tab in Google Sheets with columns:
-# ticker | asset_class | entry_date | entry_rationale | exit_date |
-# exit_rationale | realised_pnl_usd | lessons
 @app.route("/api/trade_rationale")
 def trade_rationale():
     try:
         trades, config_rows, manual_rows = get_sheet_data()
-        # get_sheet_data only fetches trades, config, manual_prices.
-        # We need to open the sheet again to get trade_rationale tab.
         creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
         if creds_json:
             import tempfile
