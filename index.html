@@ -217,6 +217,9 @@ tr.row-loss td:last-child{color:var(--color-error)}
 /* ── Dashboard — Band Chart ──────────────────────────────────────────────────── */
 .dash-alloc-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin-bottom:2rem}
 @media(max-width:768px){.dash-alloc-grid{grid-template-columns:1fr}}
+
+/* ── Dashboard — filter select ───────────────────────────────────────────────── */
+.dash-pos-filter-select{font-size:.75rem;padding:.3rem .6rem;border-radius:var(--radius-md);border:1px solid var(--color-border);background:var(--color-surface);color:var(--color-text);cursor:pointer}
 </style>
 </head>
 <body>
@@ -600,6 +603,104 @@ function setDashRange(range) {
   if (root) renderDashboard(root);
 }
 
+// Dashboard positions filter state
+window._dashPosFilters = window._dashPosFilters || { assetClass: 'All Classes', band: 'All Bands', breachOnly: false };
+
+function applyDashPosFilters() {
+  const wrap = document.getElementById('dashPosTableWrap');
+  if (!wrap) return;
+  const f = window._dashPosFilters;
+  const allPositions = getOpenPositions();
+  let rows = allPositions;
+  if (f.assetClass !== 'All Classes') rows = rows.filter(r => r.asset_class === f.assetClass);
+  if (f.band !== 'All Bands') rows = rows.filter(r => r.sizing_band === f.band);
+  if (f.breachOnly) rows = rows.filter(r => r.sizing_breach);
+
+  const filtersActive = f.assetClass !== 'All Classes' || f.band !== 'All Bands' || f.breachOnly;
+
+  const posColumns = _buildPosColumns();
+  const posOptions = {
+    rowClass: row => {
+      if (row.flags && (row.flags.includes('EXIT_REVIEW') || row.flags.includes('WATCH_60D'))) return 'row-exit';
+      if (row.sizing_breach) return 'row-breach';
+      return '';
+    },
+    rowClick: row => `window.location.hash='#/positions/${row.ticker}'`
+  };
+
+  if (rows.length === 0) {
+    wrap.innerHTML = filtersActive
+      ? EmptyState('🔍', 'No matches', 'No positions match the current filters.')
+      : EmptyState('📭', 'No open positions', 'Open positions will appear here once trades are logged.');
+  } else {
+    wrap.innerHTML = DataTable(posColumns, rows, posOptions);
+  }
+}
+
+function _buildPosColumns() {
+  return [
+    {
+      key: 'name', label: 'Name',
+      render: (val, row) => `<strong>${val}</strong><br><span style="font-size:.7rem;color:var(--color-text-muted)">${row.ticker}<\/span>`
+    },
+    {
+      key: 'asset_class', label: 'Class',
+      render: val => `<span class="badge ${badgeAssetClass(val)}">${val}<\/span>`
+    },
+    {
+      key: 'direction', label: 'Direction',
+      render: val => Badge(val, val === 'LONG' ? 'success' : 'danger')
+    },
+    {
+      key: 'quantity', label: 'Qty',
+      render: val => Number(val).toFixed(2)
+    },
+    {
+      key: 'avg_price', label: 'Avg Price',
+      render: (val, row) => `${row.currency} ${Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4})}`
+    },
+    {
+      key: 'live_price', label: 'Live Price',
+      render: (val, row) => val != null ? `${row.currency} ${Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4})}` : '—'
+    },
+    {
+      key: 'mv_usd', label: 'Market Value',
+      render: val => fmt(val, 0)
+    },
+    {
+      key: 'unreal_pnl', label: 'Unrealised P&L',
+      render: val => `<span class="${val >= 0 ? 'up' : 'down'}">${fmt(val, 0)}<\/span>`
+    },
+    {
+      key: 'unreal_pct', label: 'Unrealised %',
+      render: val => `<span class="${val >= 0 ? 'up' : 'down'}">${fmtPct(val)}<\/span>`
+    },
+    {
+      key: 'weight_pct', label: 'Weight %',
+      render: val => fmtPctRaw(val)
+    },
+    {
+      key: 'sizing_band', label: 'Sizing Band',
+      render: val => Badge(val, {Core:'success',Satellite:'blue',Opportunistic:'default',Speculative:'purple',Unclassified:'warning'}[val] || 'default')
+    },
+    {
+      key: 'sizing_breach', label: 'Band Status',
+      render: val => Badge(val ? 'Breach' : 'Within limits', val ? 'warning' : 'success')
+    },
+    {
+      key: 'flags', label: 'Flags',
+      render: val => val && val.length ? val.map(f => FlagBadge(f)).join(' ') : '<span style="color:var(--color-text-faint)">—<\/span>'
+    },
+    {
+      key: 'open_date', label: 'Open Date'
+    },
+    {
+      key: 'open_date', label: 'Days Held',
+      render: val => val ? Math.round((Date.now() - new Date(val)) / 86400000) : '—'
+    }
+  ];
+}
+
 function destroyChartSafe(chartRef) {
   if (chartRef && typeof chartRef.destroy === 'function') chartRef.destroy();
 }
@@ -818,6 +919,11 @@ function renderDashboard(root) {
   // ── Hit rate & trade stats ────────────────────────────────────────────────
   const hitPos = (metrics.hit_rate_pct || 0) > 50;
 
+  // ── Open positions filter — build unique asset classes ────────────────────
+  const allOpenPos = getOpenPositions();
+  const uniqueClasses = [...new Set(allOpenPos.map(p => p.asset_class).filter(Boolean))].sort();
+  const BANDS = ['Core','Satellite','Opportunistic','Speculative','Unclassified'];
+
   // ── Build HTML ────────────────────────────────────────────────────────────
   root.innerHTML = `
     ${SectionHeader('Dashboard', 'Full portfolio analytics')}
@@ -952,6 +1058,39 @@ function renderDashboard(root) {
         <div class="chart-title">Drawdown Band</div>
         <div class="chart-wrap"><canvas id="dashBandCanvas"></canvas></div>
       </div>
+    </div>
+
+    <!-- Open Positions Table -->
+    <div class="table-card section-gap">
+      <div class="table-header">
+        <h2>Open Positions</h2>
+        <div style="display:flex;gap:.5rem;align-items:center">
+          <select id="dashPosAssetFilter" class="dash-pos-filter-select"
+                  onchange="window._dashPosFilters.assetClass=this.value;applyDashPosFilters()">
+            <option value="All Classes">All Classes</option>
+            ${uniqueClasses.map(c => `<option value="${c}"${window._dashPosFilters.assetClass===c?' selected':''}>${c}<\/option>`).join('')}
+          </select>
+          <select id="dashPosBandFilter" class="dash-pos-filter-select"
+                  onchange="window._dashPosFilters.band=this.value;applyDashPosFilters()">
+            <option value="All Bands">All Bands</option>
+            ${BANDS.map(b => `<option value="${b}"${window._dashPosFilters.band===b?' selected':''}>${b}<\/option>`).join('')}
+          </select>
+          <button id="dashPosBreachToggle"
+                  class="btn ${window._dashPosFilters.breachOnly ? 'btn-primary' : 'btn-outline'}"
+                  onclick="window._dashPosFilters.breachOnly=!window._dashPosFilters.breachOnly;this.className='btn '+(window._dashPosFilters.breachOnly?'btn-primary':'btn-outline');applyDashPosFilters()">
+            Breaches Only
+          </button>
+        </div>
+      </div>
+      <div id="dashPosTableWrap"></div>
+    </div>
+
+    <!-- Closed Trades Table -->
+    <div class="table-card section-gap">
+      <div class="table-header">
+        <h2>Closed Trades</h2>
+      </div>
+      <div id="dashClosedTableWrap"></div>
     </div>
   `;
 
@@ -1108,6 +1247,65 @@ function renderDashboard(root) {
           }
         }
       });
+    }
+  }
+
+  // ── Open Positions Table (initial render via applyDashPosFilters) ──────────
+  applyDashPosFilters();
+
+  // ── Closed Trades Table ───────────────────────────────────────────────────
+  const closedWrap = document.getElementById('dashClosedTableWrap');
+  if (closedWrap) {
+    const closedRows = [...getClosedTrades()].sort((a, b) => new Date(b.date) - new Date(a.date));
+    const closedColumns = [
+      {
+        key: 'date', label: 'Date',
+        render: val => val || '—'
+      },
+      {
+        key: 'name', label: 'Name / Ticker',
+        render: (val, row) => `<strong>${val}</strong><br><span style="font-size:.7rem;color:var(--color-text-muted)">${row.ticker}<\/span>`
+      },
+      {
+        key: 'asset_class', label: 'Class',
+        render: val => `<span class="badge ${badgeAssetClass(val)}">${val || '—'}<\/span>`
+      },
+      {
+        key: 'qty', label: 'Qty',
+        render: val => Number(val).toFixed(2)
+      },
+      {
+        key: 'entry_price', label: 'Entry Price',
+        render: val => val != null ? Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}) : '—'
+      },
+      {
+        key: 'exit_price', label: 'Exit Price',
+        render: val => val != null ? Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}) : '—'
+      },
+      {
+        key: 'realised_pnl_usd', label: 'Realised P&L',
+        render: val => `<span class="${val >= 0 ? 'up' : 'down'}">${fmt(val, 0)}<\/span>`
+      },
+      {
+        key: 'entry_price', label: 'Return %',
+        render: (val, row) =>
+          val && row.exit_price
+            ? fmtPct(((row.exit_price - val) / val) * 100)
+            : '—'
+      }
+    ];
+    const closedOptions = {
+      rowClass: row => {
+        if (row.realised_pnl_usd > 0)  return 'row-profit';
+        if (row.realised_pnl_usd < 0)  return 'row-loss';
+        return '';
+      },
+      emptyMessage: 'Closed trade history will appear here once trades are completed.'
+    };
+    if (closedRows.length === 0) {
+      closedWrap.innerHTML = EmptyState('📭', 'No closed trades', 'Closed trade history will appear here once trades are completed.');
+    } else {
+      closedWrap.innerHTML = DataTable(closedColumns, closedRows, closedOptions);
     }
   }
 }
