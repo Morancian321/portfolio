@@ -184,16 +184,41 @@ def build_positions(trades, fx_rates, manual_map):
                 qty_held   += qty
 
             elif action == "REDUCE":
+                # --- FIX: convert REDUCE realised P&L to USD ---
+                # Previously this stored raw 'realised_pnl' (in local currency, no FX),
+                # so realised_total = sum(.get('realised_pnl_usd', 0)) silently returned
+                # 0 for every partial sell, excluding it from all KPIs and cash.
                 avg = cost_basis / qty_held if qty_held else price
-                realised = (price - avg) * qty
+                realised_local = (price - avg) * qty
                 cost_basis -= avg * qty
                 qty_held   -= qty
+
+                currency = get_currency(yf_ticker)
+                fx        = fx_rates.get(currency, 1.0)
+                effective_fx = 1.0 if tv_no_fx else fx
+
+                # Sheet prices for LSE tickers are in pence — convert to GBP
+                if is_lse(yf_ticker):
+                    avg_usd   = avg / 100 * effective_fx
+                    price_usd = price / 100 * effective_fx
+                else:
+                    avg_usd   = avg * effective_fx
+                    price_usd = price * effective_fx
+
+                realised_usd   = (price_usd - avg_usd) * qty
+                cost_usd_sold  = avg_usd * qty  # proceeds cost basis (for cash tracking)
+
                 closed_trades.append({
-                    "ticker": ticker, "name": name,
-                    "qty": qty, "entry_price": avg,
-                    "exit_price": price, "realised_pnl": realised,
-                    "date": e.get("date"), "yf_ticker": yf_ticker,
-                    "asset_class": asset_class,
+                    "ticker":          ticker,
+                    "name":            name,
+                    "qty":             qty,
+                    "entry_price":     round(avg_usd / effective_fx, 4) if effective_fx else round(avg, 4),
+                    "exit_price":      round(price_usd / effective_fx, 4) if effective_fx else round(price, 4),
+                    "realised_pnl_usd": round(realised_usd, 2),
+                    "cost_usd_sold":   round(cost_usd_sold, 2),
+                    "date":            e.get("date"),
+                    "yf_ticker":       yf_ticker,
+                    "asset_class":     asset_class,
                 })
 
             elif action == "CLOSE":
@@ -392,6 +417,8 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
                         del holdings[tk]
                     else:
                         holdings[tk]["qty"] -= close_qty
+                        # avg_cost_gbp is unchanged on a partial sell (FIFO cost basis
+                        # remains the same per unit; only qty is reduced)
 
         # Portfolio value on this date
         port_val = cash
@@ -498,6 +525,7 @@ def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[]
     }
 
     # --- Hit Rate, Avg Gain/Loss, Total Realised PnL (from closed_trades) ---
+    # Includes both full CLOSE and partial REDUCE trades (all have realised_pnl_usd)
     winners = [t for t in closed_trades if t.get("realised_pnl_usd", 0) > 0]
     losers  = [t for t in closed_trades if t.get("realised_pnl_usd", 0) <= 0]
     hit_rate_pct = round(len(winners) / len(closed_trades) * 100, 1) if closed_trades else 0
