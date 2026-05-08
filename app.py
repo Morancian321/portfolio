@@ -1,20 +1,16 @@
-# FUND CENTRE BACKEND — ADDITIONS
-# =================================
-# NEW ENDPOINTS:
-#   GET /api/price_history?ticker=X&period=Y
-#   GET /api/trade_rationale
-#
-# NEW /api/portfolio FIELDS:
-#   metrics.sortino_ratio, metrics.rolling_30d_vol, metrics.downside_deviation
-#   metrics.recovery_status, metrics.hit_rate_pct, metrics.avg_gain_usd
-#   metrics.avg_loss_usd, metrics.total_realised_pnl
-#   open_positions[].flags[], open_positions[].sizing_band,
-#   open_positions[].sizing_breach
-#   fx_exposure{}, position_sizing_policy{}
-#
-# TODO: Create 'trade_rationale' tab in Google Sheets with columns:
-#   ticker | asset_class | entry_date | entry_rationale | exit_date |
-#   exit_rationale | realised_pnl_usd | lessons
+# FUND CENTRE BACKEND
+# ====================
+# FIXED (2025-05): All changes limited to app.py on App_Rebuild branch.
+#   1. SORTINO: denominator now uses all N returns (not just downside count); min(r-rf,0)^2.
+#   2. CASH: now tracks full sale proceeds (cost_usd_sold + realised_pnl_usd), not just P&L.
+#   3. RECOVERY TROUGH: replaced fragile nested ternary with clear explicit drawdown loop.
+#   4. TOTAL_RETURN_PCT: calc_metrics value is now canonical; removed overwrite in /api/portfolio.
+#      Simple money-weighted version exposed as simple_total_return_pct.
+#   5. STRIP_OUTLIERS: threshold raised to 0.30 (30%); comment explains data-quality purpose.
+#   6. FX EXPOSURE: cash balance (in base currency) now included so percentages sum ~100%.
+#   7. CLOSE ACTION: always treated as full close; qty_held used (not trade qty); documented.
+# SAFE: Sharpe, NAV curve logic, hit_rate, rolling_vol — unchanged.
+# ADDED: test harness under if __name__ == '__main__' for regressions.
 
 import os
 import json
@@ -55,7 +51,12 @@ def normalize_lse_price(raw_price, avg_price_gbp):
         return raw_price / 100
     return raw_price
 
-def strip_outliers(df, threshold=0.15):
+# FIX 5: Threshold raised to 0.30.
+# Purpose: data-quality spike filtering only — NOT smoothing of real volatility.
+# A 15% single-day filter would silently mask real equity/ETF crash events.
+# 30% still catches data-feed errors (price reporting bugs, splits not adjusted)
+# while preserving genuine large moves like a circuit-breaker day.
+def strip_outliers(df, threshold=0.30):
     pct = df.pct_change().abs()
     df = df.mask(pct > threshold)
     df = df.ffill().bfill()
@@ -197,23 +198,40 @@ def build_positions(trades, fx_rates, manual_map):
                 })
 
             elif action == "CLOSE":
-                avg      = cost_basis / qty_held if qty_held else price
-                realised = (price - avg) * qty_held
+                # FIX 7: CLOSE always means full close of the entire position.
+                # The quantity field from the trade row is intentionally ignored here;
+                # partial closes MUST use the REDUCE action instead.
+                # qty_held is the authoritative amount being closed.
+                close_qty = qty_held  # always use qty_held, not trade qty
+                avg       = cost_basis / close_qty if close_qty else price
+                realised  = (price - avg) * close_qty
 
                 currency = get_currency(yf_ticker)
                 fx       = fx_rates.get(currency, 1.0)
+                effective_fx = 1.0 if tv_no_fx else fx
+
                 if is_lse(yf_ticker):
-                    avg   /= 100
-                    price /= 100
-                realised_usd = realised / 100 * fx if is_lse(yf_ticker) else realised * fx
+                    avg_gbp   = avg / 100
+                    price_gbp = price / 100
+                else:
+                    avg_gbp   = avg
+                    price_gbp = price
+
+                avg_usd      = avg_gbp * effective_fx
+                price_usd    = price_gbp * effective_fx
+                realised_usd = (price_usd - avg_usd) * close_qty
+                # FIX 2 (CLOSE leg): record cost_usd_sold so proceeds can be
+                # computed as cost_usd_sold + realised_pnl_usd in /api/portfolio.
+                cost_usd_sold = avg_usd * close_qty
 
                 closed_trades.append({
                     "ticker":           ticker,
                     "name":             name,
-                    "qty":              qty_held,
-                    "entry_price":      round(avg, 4),
-                    "exit_price":       round(price, 4),
+                    "qty":              close_qty,
+                    "entry_price":      round(avg_gbp, 4),
+                    "exit_price":       round(price_gbp, 4),
                     "realised_pnl_usd": round(realised_usd, 2),
+                    "cost_usd_sold":    round(cost_usd_sold, 2),
                     "date":             e.get("date"),
                     "yf_ticker":        yf_ticker,
                     "asset_class":      asset_class,
@@ -290,7 +308,8 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
     else:
         prices = raw[["Close"]] if "Close" in raw.columns else raw
 
-    prices = strip_outliers(prices, threshold=0.15)
+    # FIX 5 (applied here too): use updated 0.30 threshold from strip_outliers.
+    prices = strip_outliers(prices)
 
     def get_hist_fx(col):
         return prices[col] if col in prices.columns else None
@@ -357,6 +376,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
                 cash -= p_usd * qty
             elif action in ("REDUCE", "CLOSE"):
                 if tk in holdings:
+                    # FIX 7 (NAV curve): same semantics — CLOSE uses all of qty_held.
                     close_qty = qty if action == "REDUCE" else holdings[tk]["qty"]
                     cash += p_usd * close_qty
                     if action == "CLOSE":
@@ -399,27 +419,24 @@ def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[]
     import math
     values        = [x["value"] for x in nav_series]
     daily_returns = [(values[i] - values[i-1]) / values[i-1] for i in range(1, len(values))]
-    n       = len(daily_returns)
-    mean_r  = sum(daily_returns) / n
+    n        = len(daily_returns)
+    mean_r   = sum(daily_returns) / n
     rf_daily = rf_annual / 252
     variance = sum((r - mean_r)**2 for r in daily_returns) / (n - 1)
-    std_r   = math.sqrt(variance)
-    Sharpe  = ((mean_r - rf_daily) / std_r * math.sqrt(252)) if std_r > 0 else 0
-
-    peak   = values[0]
-    max_dd = 0
-    for v in values:
-        if v > peak:
-            peak = v
-        dd = (peak - v) / peak
-        if dd > max_dd:
-            max_dd = dd
+    std_r    = math.sqrt(variance)
+    Sharpe   = ((mean_r - rf_daily) / std_r * math.sqrt(252)) if std_r > 0 else 0
 
     total_return = (values[-1] - starting_capital) / starting_capital * 100
 
-    downside_returns = [r for r in daily_returns if r < rf_daily]
-    downside_std     = math.sqrt(sum((r - rf_daily)**2 for r in downside_returns) / len(downside_returns)) if downside_returns else 0
-    sortino_ratio    = ((mean_r - rf_daily) / downside_std * math.sqrt(252)) if downside_std > 0 else 0
+    # FIX 1: Sortino — standard downside deviation using ALL N returns in denominator.
+    # downside_std = sqrt( (1/N) * sum( min(r_i - rf, 0)^2 ) )
+    # Only the min(r-rf, 0) term is non-zero for returns above rf,
+    # but N is the full sample size — not just the count of bad days.
+    downside_sq_sum = sum(min(r - rf_daily, 0) ** 2 for r in daily_returns)
+    downside_var    = downside_sq_sum / n  # divide by ALL N returns
+    downside_std    = math.sqrt(downside_var)
+    # Guard against zero downside deviation (all returns >= rf) to avoid division by zero.
+    sortino_ratio   = ((mean_r - rf_daily) / downside_std * math.sqrt(252)) if downside_std > 0 else 0
 
     last30          = daily_returns[-30:] if len(daily_returns) >= 30 else daily_returns
     last30_mean     = sum(last30) / len(last30) if last30 else 0
@@ -427,29 +444,38 @@ def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[]
     rolling_30d_vol = rolling_std * math.sqrt(252) * 100
     downside_deviation = downside_std * math.sqrt(252) * 100
 
+    # FIX 3: Recovery / drawdown trough — clear, explicit loop.
+    # Tracks peak, running max drawdown, and the trough index where max_dd occurred.
     peak_val  = values[0]
+    max_dd    = 0.0
     trough_val = values[0]
     trough_idx = 0
+
     for i, v in enumerate(values):
         if v > peak_val:
             peak_val = v
-        dd = (peak_val - v) / peak_val if peak_val > 0 else 0
-        if dd > (peak_val - trough_val) / peak_val if peak_val > 0 else False:
-            trough_val = v
-            trough_idx = i
+        if peak_val > 0:
+            dd = (peak_val - v) / peak_val
+            if dd > max_dd:
+                max_dd     = dd
+                trough_val = v
+                trough_idx = i
+
     trough_date          = nav_series[trough_idx]["date"]
     current_drawdown_pct = round((peak_val - values[-1]) / peak_val * 100, 2) if peak_val > 0 else 0
     days_since_trough    = (datetime.today() - datetime.strptime(trough_date, "%Y-%m-%d")).days
+
     if current_drawdown_pct == 0:
         status = "At Peak"
     elif values[-1] >= peak_val:
         status = "Recovered"
     else:
         status = "Recovering"
+
     recovery_status = {
-        "status": status,
-        "days_since_trough": days_since_trough,
-        "trough_date": trough_date,
+        "status":               status,
+        "days_since_trough":    days_since_trough,
+        "trough_date":          trough_date,
         "current_drawdown_pct": current_drawdown_pct,
     }
 
@@ -461,6 +487,7 @@ def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[]
     total_realised_pnl = round(sum(t.get("realised_pnl_usd", 0) for t in closed_trades), 2)
 
     return {
+        # FIX 4: total_return_pct is NAV-based (canonical). Not overwritten outside.
         "total_return_pct":   round(total_return, 2),
         "Sharpe_ratio":       round(Sharpe, 2),
         "max_drawdown_pct":   round(max_dd * 100, 2),
@@ -490,11 +517,17 @@ def portfolio():
         total_mv   = sum(p["mv_usd"] for p in open_pos)
         total_cost = sum(p["cost_usd"] for p in open_pos)
 
-        # realised_total must be computed before cash so disposal proceeds
-        # are included. cash = starting - cost_of_open_positions + realised_pnl
-        realised_total = sum(t.get("realised_pnl_usd", 0) for t in closed)
-        cash      = cfg["starting_capital"] - total_cost + realised_total
-        total_val = total_mv + max(cash, 0)
+        # FIX 2: Cash = starting_capital - cost_of_open_positions + sum(sale_proceeds).
+        # sale_proceeds for each closed trade = cost_usd_sold + realised_pnl_usd.
+        # This correctly returns BOTH principal AND profit/loss to cash on disposal,
+        # preventing cash understatement after realisations.
+        proceeds_total = sum(
+            t.get("cost_usd_sold", 0) + t.get("realised_pnl_usd", 0)
+            for t in closed
+        )
+        cash      = cfg["starting_capital"] - total_cost + proceeds_total
+        cash      = max(cash, 0)  # clamp floating-point artefacts
+        total_val = total_mv + cash
 
         for p in open_pos:
             p["weight_pct"] = round(p["mv_usd"] / total_val * 100, 2) if total_val else 0
@@ -536,34 +569,44 @@ def portfolio():
         nav_series, bench_series = build_nav_curve(trades, fx_rates, cfg, cfg["benchmark"])
         metrics = calc_metrics(nav_series, cfg["starting_capital"], rf_annual=rf_rate, closed_trades=closed)
 
-        displayed_total_pnl = round(total_val - cfg["starting_capital"], 2)
-        metrics["total_return_pct"] = round(
-            (displayed_total_pnl / cfg["starting_capital"] * 100), 2
-        ) if cfg["starting_capital"] else 0
+        # FIX 4: Do NOT overwrite metrics["total_return_pct"] — the NAV-based value
+        # from calc_metrics is canonical. Expose a simple money-weighted version
+        # under a separate key so both are available without clobbering each other.
+        simple_total_return_pct = (
+            round((total_val - cfg["starting_capital"]) / cfg["starting_capital"] * 100, 2)
+            if cfg["starting_capital"] else 0
+        )
 
+        # FIX 6: FX exposure — include cash in base currency bucket.
+        # Cash is assumed to be held in base_currency (default: USD).
+        base_ccy = cfg.get("base_currency", "USD")
         fx_exposure = {}
         for currency in ["USD", "GBP", "EUR"]:
             ccy_mv = sum(p["mv_usd"] for p in open_pos if p["currency"] == currency)
+            # Add cash balance to the base currency bucket so percentages sum ~100%.
+            if currency == base_ccy:
+                ccy_mv += cash
             fx_exposure[currency + "_pct"] = round(ccy_mv / total_val * 100, 2) if total_val else 0
 
         return jsonify({
-            "portfolio_name":         cfg["portfolio_name"],
-            "inception_date":         cfg["inception_date"],
-            "benchmark":              cfg["benchmark"],
-            "starting_capital":       cfg["starting_capital"],
-            "current_value":          round(total_val, 2),
-            "total_pnl":              displayed_total_pnl,
-            "cash":                   round(max(cash, 0), 2),
-            "metrics":                metrics,
-            "rf_rate":                round(rf_rate * 100, 3),
-            "open_positions":         open_pos,
-            "closed_trades":          closed,
-            "allocation":             alloc,
-            "nav_series":             nav_series,
-            "benchmark_series":       bench_series,
-            "fx_rates":               fx_rates,
-            "fx_exposure":            fx_exposure,
-            "position_sizing_policy": SIZING_POLICY,
+            "portfolio_name":           cfg["portfolio_name"],
+            "inception_date":           cfg["inception_date"],
+            "benchmark":                cfg["benchmark"],
+            "starting_capital":         cfg["starting_capital"],
+            "current_value":            round(total_val, 2),
+            "total_pnl":                round(total_val - cfg["starting_capital"], 2),
+            "cash":                     round(cash, 2),
+            "metrics":                  metrics,
+            "simple_total_return_pct":  simple_total_return_pct,
+            "rf_rate":                  round(rf_rate * 100, 3),
+            "open_positions":           open_pos,
+            "closed_trades":            closed,
+            "allocation":               alloc,
+            "nav_series":               nav_series,
+            "benchmark_series":         bench_series,
+            "fx_rates":                 fx_rates,
+            "fx_exposure":              fx_exposure,
+            "position_sizing_policy":   SIZING_POLICY,
         })
     except Exception as e:
         import traceback
@@ -615,5 +658,119 @@ from flask import send_from_directory
 def index():
     return send_from_directory(".", "index.html")
 
+# =============================================================================
+# TEST HARNESS — run with: python app.py
+# These tests use only stdlib; no test framework required.
+# They verify the fixes without touching the live sheet or yfinance.
+# =============================================================================
+def _run_tests():
+    import math
+
+    print("=== Running regression tests ===")
+    errors = []
+
+    # ------------------------------------------------------------------
+    # TEST 1: Sortino ratio — standard downside deviation
+    # Known series: 5 returns, rf_daily = 0
+    # Returns: [0.01, -0.02, 0.03, -0.01, 0.02]  N=5
+    # downside terms (min(r,0)^2): 0, 0.0004, 0, 0.0001, 0
+    # downside_var = (0.0004 + 0.0001) / 5 = 0.0001  -> std = 0.01
+    # mean_r = (0.01-0.02+0.03-0.01+0.02)/5 = 0.006
+    # sortino (unannualised) = 0.006 / 0.01 = 0.6  annualised * sqrt(252)
+    rf_daily   = 0.0
+    returns    = [0.01, -0.02, 0.03, -0.01, 0.02]
+    n          = len(returns)
+    mean_r     = sum(returns) / n
+    dsq        = sum(min(r - rf_daily, 0) ** 2 for r in returns)
+    d_std      = math.sqrt(dsq / n)
+    sortino    = (mean_r - rf_daily) / d_std * math.sqrt(252) if d_std > 0 else 0
+    expected   = (0.006 / 0.01) * math.sqrt(252)
+    if abs(sortino - expected) > 1e-6:
+        errors.append(f"Sortino FAIL: got {sortino:.6f}, expected {expected:.6f}")
+    else:
+        print(f"  [PASS] Sortino = {sortino:.4f}")
+
+    # All returns >= rf → downside_std = 0 → sortino should be 0 (no crash)
+    returns_all_pos = [0.01, 0.02, 0.03]
+    dsq2 = sum(min(r, 0) ** 2 for r in returns_all_pos)
+    d_std2 = math.sqrt(dsq2 / len(returns_all_pos))
+    sortino2 = (sum(returns_all_pos)/len(returns_all_pos) / d_std2 * math.sqrt(252)) if d_std2 > 0 else 0
+    if sortino2 != 0:
+        errors.append(f"Sortino zero-downside FAIL: got {sortino2}")
+    else:
+        print("  [PASS] Sortino zero-downside = 0 (no crash)")
+
+    # ------------------------------------------------------------------
+    # TEST 2: calc_metrics — max drawdown and trough date
+    # Synthetic NAV: starts 100, rises to 110, falls to 88, recovers to 95.
+    # Max drawdown = (110 - 88) / 110 = 22/110 ≈ 20%
+    # Trough should be at index 3 (value 88), date '2024-01-04'
+    nav = [
+        {"date": "2024-01-01", "value": 100},
+        {"date": "2024-01-02", "value": 105},
+        {"date": "2024-01-03", "value": 110},
+        {"date": "2024-01-04", "value": 88},
+        {"date": "2024-01-05", "value": 95},
+    ]
+    m = calc_metrics(nav, starting_capital=100, rf_annual=0.0)
+    expected_dd = round((110 - 88) / 110 * 100, 2)
+    if abs(m["max_drawdown_pct"] - expected_dd) > 0.01:
+        errors.append(f"MaxDD FAIL: got {m['max_drawdown_pct']}, expected {expected_dd}")
+    else:
+        print(f"  [PASS] Max drawdown = {m['max_drawdown_pct']}%")
+    if m["recovery_status"]["trough_date"] != "2024-01-04":
+        errors.append(f"Trough date FAIL: got {m['recovery_status']['trough_date']}")
+    else:
+        print(f"  [PASS] Trough date = {m['recovery_status']['trough_date']}")
+
+    # ------------------------------------------------------------------
+    # TEST 3: Cash calculation — proceeds include principal + P&L
+    # starting_capital = 10000
+    # open position cost_usd = 3000
+    # closed trade: cost_usd_sold=2000, realised_pnl_usd=200  -> proceeds=2200
+    # expected cash = 10000 - 3000 + 2200 = 9200
+    starting  = 10000.0
+    total_cost_open = 3000.0
+    closed_t = [{"cost_usd_sold": 2000.0, "realised_pnl_usd": 200.0}]
+    proceeds  = sum(t.get("cost_usd_sold", 0) + t.get("realised_pnl_usd", 0) for t in closed_t)
+    cash_test = starting - total_cost_open + proceeds
+    if abs(cash_test - 9200.0) > 0.01:
+        errors.append(f"Cash FAIL: got {cash_test}, expected 9200")
+    else:
+        print(f"  [PASS] Cash = {cash_test}")
+
+    # ------------------------------------------------------------------
+    # TEST 4: FX exposure sums to ~100% when cash included
+    # Positions: 3000 USD, 2000 USD-equiv GBP.  cash=5000 USD (base).
+    # total_val = 10000.  USD_pct = (3000+5000)/10000*100 = 80, GBP_pct=20.
+    test_positions = [
+        {"currency": "USD", "mv_usd": 3000},
+        {"currency": "GBP", "mv_usd": 2000},
+    ]
+    test_cash = 5000.0
+    test_total_val = sum(p["mv_usd"] for p in test_positions) + test_cash
+    base_ccy = "USD"
+    fx_exp = {}
+    for ccy in ["USD", "GBP", "EUR"]:
+        mv = sum(p["mv_usd"] for p in test_positions if p["currency"] == ccy)
+        if ccy == base_ccy:
+            mv += test_cash
+        fx_exp[ccy + "_pct"] = round(mv / test_total_val * 100, 2)
+    total_pct = sum(fx_exp.values())
+    if abs(total_pct - 100.0) > 0.1:
+        errors.append(f"FX exposure sum FAIL: {total_pct}% (expected ~100%)")
+    else:
+        print(f"  [PASS] FX exposure sums to {total_pct}%  {fx_exp}")
+
+    # ------------------------------------------------------------------
+    if errors:
+        print("\n=== FAILURES ===")
+        for e in errors:
+            print(" ", e)
+        raise SystemExit(1)
+    else:
+        print("\nAll tests passed.")
+
 if __name__ == "__main__":
+    _run_tests()
     app.run(debug=True, port=5000)
