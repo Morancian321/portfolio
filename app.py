@@ -281,6 +281,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
         prices = raw[["Close"]] if "Close" in raw.columns else raw
 
     prices = prices.ffill().bfill()
+    prices.index = prices.index.tz_localize(None)
 
     from collections import defaultdict
     events_by_date = defaultdict(list)
@@ -360,9 +361,11 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
                     p_usd = p_gbp * fx_r
                     port_val += p_usd * h["qty"]
                 else:
-                    port_val += h["qty"]  # fallback
-            except:
-                pass
+                    # ticker not in price data — fall back to cost basis (NAV stays flat)
+                    port_val += h["avg_cost_gbp"] * h["qty"] * fx_r
+            except (KeyError, IndexError):
+                # price slice failed — fall back to cost basis rather than dropping position
+                port_val += h["avg_cost_gbp"] * h["qty"] * fx_r
 
         nav_series.append({"date": ds, "value": round(port_val, 2)})
 
