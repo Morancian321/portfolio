@@ -1,3 +1,21 @@
+# FUND CENTRE BACKEND — ADDITIONS
+# =================================
+# NEW ENDPOINTS:
+#   GET /api/price_history?ticker=X&period=Y
+#   GET /api/trade_rationale
+#
+# NEW /api/portfolio FIELDS:
+#   metrics.sortino_ratio, metrics.rolling_30d_vol, metrics.downside_deviation
+#   metrics.recovery_status, metrics.hit_rate_pct, metrics.avg_gain_usd
+#   metrics.avg_loss_usd, metrics.total_realised_pnl
+#   open_positions[].flags[], open_positions[].sizing_band,
+#   open_positions[].sizing_breach
+#   fx_exposure{}, position_sizing_policy{}
+#
+# TODO: Create 'trade_rationale' tab in Google Sheets with columns:
+#   ticker | asset_class | entry_date | entry_rationale | exit_date |
+#   exit_rationale | realised_pnl_usd | lessons
+
 import os
 import json
 from datetime import datetime, timedelta
@@ -12,6 +30,13 @@ CORS(app)
 
 SHEET_ID = os.environ.get("SHEET_ID", "1RwIupOHnln5if-hzCE-bQPfT_TW7N1_sTZcPDMelb5g")
 CREDS_FILE = os.environ.get("GOOGLE_CREDENTIALS_FILE", "credentials.json")
+
+SIZING_POLICY = {
+    "Core":          {"tickers": ["IWDA", "AGGG"],                  "min_pct": 20, "max_pct": 30},
+    "Satellite":     {"tickers": ["INFR", "BRIJ", "GILG", "IGLN"], "min_pct": 5,  "max_pct": 12},
+    "Opportunistic": {"tickers": ["EEM", "WSML"],                   "min_pct": 3,  "max_pct": 7},
+    "Speculative":   {"tickers": ["BTCUSD", "BTC-USD", "COIN"],     "min_pct": 0,  "max_pct": 2},
+}
 
 # Currency detection from yf ticker suffix
 def get_currency(yf_ticker):
@@ -353,7 +378,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
 
     return nav_series, bench_series
 
-def calc_metrics(nav_series, starting_capital, rf_annual=0.043):
+def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[]):
     if len(nav_series) < 2:
         return {}
     values = [x["value"] for x in nav_series]
@@ -378,12 +403,71 @@ def calc_metrics(nav_series, starting_capital, rf_annual=0.043):
 
     total_return = (values[-1] - starting_capital) / starting_capital * 100
 
+    # --- Sortino Ratio ---
+    downside_returns = [r for r in daily_returns if r < rf_daily]
+    downside_std = math.sqrt(sum((r - rf_daily)**2 for r in downside_returns) / len(downside_returns)) if downside_returns else 0
+    sortino_ratio = ((mean_r - rf_daily) / downside_std * math.sqrt(252)) if downside_std > 0 else 0
+
+    # --- Rolling 30-day Volatility ---
+    last30 = daily_returns[-30:] if len(daily_returns) >= 30 else daily_returns
+    last30_mean = sum(last30) / len(last30) if last30 else 0
+    rolling_std = math.sqrt(sum((r - last30_mean)**2 for r in last30) / max(len(last30) - 1, 1))
+    rolling_30d_vol = rolling_std * math.sqrt(252) * 100
+
+    # --- Downside Deviation (annualised %) ---
+    downside_deviation = downside_std * math.sqrt(252) * 100
+
+    # --- Recovery Status ---
+    peak_val = values[0]
+    peak_idx = 0
+    trough_val = values[0]
+    trough_idx = 0
+    for i, v in enumerate(values):
+        if v > peak_val:
+            peak_val = v
+            peak_idx = i
+        dd = (peak_val - v) / peak_val if peak_val > 0 else 0
+        if dd > (peak_val - trough_val) / peak_val if peak_val > 0 else False:
+            trough_val = v
+            trough_idx = i
+    trough_date = nav_series[trough_idx]["date"]
+    current_drawdown_pct = round((peak_val - values[-1]) / peak_val * 100, 2) if peak_val > 0 else 0
+    days_since_trough = (datetime.today() - datetime.strptime(trough_date, "%Y-%m-%d")).days
+    if current_drawdown_pct == 0:
+        status = "At Peak"
+    elif values[-1] >= peak_val:
+        status = "Recovered"
+    else:
+        status = "Recovering"
+    recovery_status = {
+        "status": status,
+        "days_since_trough": days_since_trough,
+        "trough_date": trough_date,
+        "current_drawdown_pct": current_drawdown_pct,
+    }
+
+    # --- Hit Rate, Avg Gain/Loss, Total Realised PnL (from closed_trades) ---
+    winners = [t for t in closed_trades if t.get("realised_pnl_usd", 0) > 0]
+    losers  = [t for t in closed_trades if t.get("realised_pnl_usd", 0) <= 0]
+    hit_rate_pct = round(len(winners) / len(closed_trades) * 100, 1) if closed_trades else 0
+    avg_gain_usd = round(sum(t["realised_pnl_usd"] for t in winners) / len(winners), 2) if winners else 0.0
+    avg_loss_usd = round(sum(abs(t["realised_pnl_usd"]) for t in losers) / len(losers), 2) if losers else 0.0
+    total_realised_pnl = round(sum(t.get("realised_pnl_usd", 0) for t in closed_trades), 2)
+
     return {
-        "total_return_pct": round(total_return, 2),
-        "Sharpe_ratio":     round(Sharpe, 2),
-        "max_drawdown_pct": round(max_dd * 100, 2),
-        "current_value":    round(values[-1], 2),
-        "total_pnl":        round(values[-1] - starting_capital, 2),
+        "total_return_pct":   round(total_return, 2),
+        "Sharpe_ratio":       round(Sharpe, 2),
+        "max_drawdown_pct":   round(max_dd * 100, 2),
+        "current_value":      round(values[-1], 2),
+        "total_pnl":          round(values[-1] - starting_capital, 2),
+        "sortino_ratio":      round(sortino_ratio, 2),
+        "rolling_30d_vol":    round(rolling_30d_vol, 2),
+        "downside_deviation": round(downside_deviation, 2),
+        "recovery_status":    recovery_status,
+        "hit_rate_pct":       hit_rate_pct,
+        "avg_gain_usd":       avg_gain_usd,
+        "avg_loss_usd":       avg_loss_usd,
+        "total_realised_pnl": total_realised_pnl,
     }
 
 @app.route("/api/portfolio")
@@ -405,6 +489,34 @@ def portfolio():
         for p in open_pos:
             p["weight_pct"] = round(p["mv_usd"] / total_val * 100, 2) if total_val else 0
 
+        # --- Flags and Sizing Band (computed after weight_pct is set) ---
+        for p in open_pos:
+            ticker      = p["ticker"]
+            asset_class = p["asset_class"]
+            weight_pct  = p["weight_pct"]
+
+            flags = []
+            if ticker == "COIN":                          flags.append("EXIT_REVIEW")
+            if ticker in ["BTCUSD", "BTC-USD"]:           flags.append("WATCH_60D")
+            if ticker == "EEM" and weight_pct > 7:        flags.append("OVERWEIGHT")
+            if ticker == "GILG" and weight_pct < 5:       flags.append("UNDERWEIGHT")
+            if ticker == "IGLN":                          flags.append("CONVICTION_HOLD")
+            if ticker == "WSML":                          flags.append("TRIM_CANDIDATE")
+            if asset_class == "Crypto":                   flags.append("SPECULATIVE")
+            if ticker in ["IWDA", "AGGG"]:                flags.append("CORE")
+            if ticker in ["INFR", "BRIJ", "GILG", "IGLN"]: flags.append("SATELLITE")
+            if ticker in ["EEM", "WSML"]:                 flags.append("OPPORTUNISTIC")
+            p["flags"] = flags
+
+            for band, policy in SIZING_POLICY.items():
+                if ticker in policy["tickers"]:
+                    p["sizing_band"]   = band
+                    p["sizing_breach"] = not (policy["min_pct"] <= weight_pct <= policy["max_pct"])
+                    break
+            else:
+                p["sizing_band"]   = "Unclassified"
+                p["sizing_breach"] = False
+
         # Build allocation dict: each asset class as % of total portfolio value (incl. cash)
         alloc = {}
         for p in open_pos:
@@ -418,30 +530,80 @@ def portfolio():
         nav_series, bench_series = build_nav_curve(
             trades, fx_rates, cfg, cfg["benchmark"]
         )
-        metrics = calc_metrics(nav_series, cfg["starting_capital"], rf_annual=rf_rate)
+        metrics = calc_metrics(nav_series, cfg["starting_capital"], rf_annual=rf_rate, closed_trades=closed)
 
         realised_total = sum(t.get("realised_pnl_usd", 0) for t in closed)
 
+        # --- FX Exposure ---
+        fx_exposure = {}
+        for currency in ["USD", "GBP", "EUR"]:
+            ccy_mv = sum(p["mv_usd"] for p in open_pos if p["currency"] == currency)
+            fx_exposure[currency + "_pct"] = round(ccy_mv / total_val * 100, 2) if total_val else 0
+
         return jsonify({
-            "portfolio_name":    cfg["portfolio_name"],
-            "inception_date":    cfg["inception_date"],
-            "benchmark":         cfg["benchmark"],
-            "starting_capital":  cfg["starting_capital"],
-            "current_value":     round(total_val, 2),
-            "total_pnl":         round(total_mv - total_cost + realised_total, 2),
-            "cash":              round(max(cash, 0), 2),
-            "metrics":           metrics,
-            "rf_rate":           round(rf_rate * 100, 3),
-            "open_positions":    open_pos,
-            "closed_trades":     closed,
-            "allocation":        alloc,
-            "nav_series":        nav_series,
-            "benchmark_series":  bench_series,
-            "fx_rates":          fx_rates,
+            "portfolio_name":         cfg["portfolio_name"],
+            "inception_date":         cfg["inception_date"],
+            "benchmark":              cfg["benchmark"],
+            "starting_capital":       cfg["starting_capital"],
+            "current_value":          round(total_val, 2),
+            "total_pnl":              round(total_mv - total_cost + realised_total, 2),
+            "cash":                   round(max(cash, 0), 2),
+            "metrics":                metrics,
+            "rf_rate":                round(rf_rate * 100, 3),
+            "open_positions":         open_pos,
+            "closed_trades":          closed,
+            "allocation":             alloc,
+            "nav_series":             nav_series,
+            "benchmark_series":       bench_series,
+            "fx_rates":               fx_rates,
+            "fx_exposure":            fx_exposure,
+            "position_sizing_policy": SIZING_POLICY,
         })
     except Exception as e:
         import traceback
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
+@app.route("/api/price_history")
+def price_history():
+    from flask import request
+    ticker = request.args.get("ticker", "SPY")
+    period = request.args.get("period", "6mo")
+    try:
+        h = yf.Ticker(ticker).history(period=period)
+        if h.empty:
+            return jsonify([])
+        result = [{"date": str(idx.date()), "close": round(float(row["Close"]), 4)}
+                  for idx, row in h.iterrows()]
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# TODO: Create a 'trade_rationale' tab in Google Sheets with columns:
+# ticker | asset_class | entry_date | entry_rationale | exit_date |
+# exit_rationale | realised_pnl_usd | lessons
+@app.route("/api/trade_rationale")
+def trade_rationale():
+    try:
+        trades, config_rows, manual_rows = get_sheet_data()
+        # get_sheet_data only fetches trades, config, manual_prices.
+        # We need to open the sheet again to get trade_rationale tab.
+        creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+        if creds_json:
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+                f.write(creds_json)
+                tmp_path = f.name
+            gc = gspread.service_account(filename=tmp_path)
+        else:
+            gc = gspread.service_account(filename=CREDS_FILE)
+        sh = gc.open_by_key(SHEET_ID)
+        try:
+            rows = sh.worksheet("trade_rationale").get_all_records()
+            return jsonify(rows)
+        except:
+            return jsonify([])
+    except Exception as e:
+        return jsonify([])
 
 @app.route("/health")
 def health():
