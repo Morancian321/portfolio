@@ -10,6 +10,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
 <style>
+/* ── Design Tokens ──────────────────────────────────────────────────────────── */
 :root,[data-theme="light"]{
   --color-bg:#f7f6f2;--color-surface:#f9f8f5;--color-surface-2:#ffffff;
   --color-border:#d4d1ca;--color-divider:#e0ddd9;
@@ -32,6 +33,8 @@
   --color-orange:#ffa657;
   --shadow-sm:0 1px 3px rgba(0,0,0,.3);--shadow-md:0 4px 12px rgba(0,0,0,.4);
 }
+
+/* ── Base Reset ─────────────────────────────────────────────────────────────── */
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html{-webkit-font-smoothing:antialiased;scroll-behavior:smooth}
 body{font-family:var(--font-body);font-size:1rem;color:var(--color-text);background:var(--color-bg);min-height:100dvh;transition:background .2s,color .2s}
@@ -39,38 +42,38 @@ img,svg{display:block;max-width:100%}
 button{cursor:pointer;background:none;border:none;font:inherit;color:inherit}
 table{border-collapse:collapse;width:100%}
 
-/* Layout */
+/* ── Layout ─────────────────────────────────────────────────────────────────── */
 .container{max-width:1200px;margin-inline:auto;padding-inline:1.5rem}
 
-/* Header */
+/* ── Header ─────────────────────────────────────────────────────────────────── */
 header{background:var(--color-surface);border-bottom:1px solid var(--color-border);position:sticky;top:0;z-index:100;backdrop-filter:blur(8px)}
 .header-inner{display:flex;align-items:center;justify-content:space-between;padding-block:.875rem;gap:1rem}
 .logo{display:flex;align-items:center;gap:.75rem}
 .logo-mark{width:32px;height:32px;flex-shrink:0}
 .logo-text h1{font-family:var(--font-display);font-size:1.1rem;font-weight:400;line-height:1.2}
 .logo-text p{font-size:.75rem;color:var(--color-text-muted);margin-top:.1rem}
-.header-right{display:flex;align-items:center;gap:1rem}
+.header-right{display:flex;align-items:center;gap:.75rem}
 .live-badge{display:flex;align-items:center;gap:.4rem;font-size:.7rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--color-success);background:color-mix(in oklch,var(--color-success) 12%,transparent);padding:.25rem .625rem;border-radius:9999px;border:1px solid color-mix(in oklch,var(--color-success) 30%,transparent)}
 .live-dot{width:6px;height:6px;border-radius:50%;background:var(--color-success);animation:pulse 2s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 .theme-toggle{width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:var(--radius-md);border:1px solid var(--color-border);color:var(--color-text-muted);transition:all .18s}
 .theme-toggle:hover{background:var(--color-surface-2);color:var(--color-text)}
 
-/* Loading */
+/* ── Loading ─────────────────────────────────────────────────────────────────── */
 .loading-screen{position:fixed;inset:0;background:var(--color-bg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1rem;z-index:999;transition:opacity .4s}
 .loading-screen.hidden{opacity:0;pointer-events:none}
 .spinner{width:36px;height:36px;border:3px solid var(--color-border);border-top-color:var(--color-primary);border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .loading-text{font-size:.875rem;color:var(--color-text-muted)}
 
-/* Error */
+/* ── Error ───────────────────────────────────────────────────────────────────── */
 .error-banner{background:color-mix(in oklch,var(--color-error) 10%,transparent);border:1px solid color-mix(in oklch,var(--color-error) 30%,transparent);color:var(--color-error);padding:1rem 1.5rem;border-radius:var(--radius-md);margin:1.5rem 0;font-size:.875rem;display:none}
 
-/* Main */
+/* ── Main ────────────────────────────────────────────────────────────────────── */
 main{padding-block:2rem}
 .section-gap{margin-bottom:2rem}
 
-/* KPI Grid */
+/* ── KPI Grid ────────────────────────────────────────────────────────────────── */
 .kpi-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:1rem;margin-bottom:2rem}
 .kpi-card{background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius-lg);padding:1.25rem 1.5rem;box-shadow:var(--shadow-sm)}
 .kpi-label{font-size:.7rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--color-text-muted);margin-bottom:.5rem}
@@ -78,14 +81,14 @@ main{padding-block:2rem}
 .kpi-delta{font-size:.8rem;font-weight:500;margin-top:.4rem;font-variant-numeric:tabular-nums}
 .up{color:var(--color-success)}.down{color:var(--color-error)}.neutral{color:var(--color-text-muted)}
 
-/* Charts Grid */
+/* ── Charts Grid ─────────────────────────────────────────────────────────────── */
 .charts-grid{display:grid;grid-template-columns:1fr;gap:1.5rem;margin-bottom:2rem}
 @media(min-width:900px){.charts-grid{grid-template-columns:2fr 1fr}}
 .chart-card{background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius-lg);padding:1.5rem;box-shadow:var(--shadow-sm)}
 .chart-title{font-size:.8rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--color-text-muted);margin-bottom:1.25rem}
 .chart-wrap{position:relative;height:260px}
 
-/* Table Card */
+/* ── Table Card ──────────────────────────────────────────────────────────────── */
 .table-card{background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius-lg);overflow:hidden;box-shadow:var(--shadow-sm);margin-bottom:2rem}
 .table-header{padding:1.25rem 1.5rem;border-bottom:1px solid var(--color-divider);display:flex;align-items:center;justify-content:space-between}
 .table-header h2{font-size:.8rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--color-text-muted)}
@@ -94,6 +97,8 @@ table th{font-size:.7rem;font-weight:600;letter-spacing:.05em;text-transform:upp
 table td{font-size:.875rem;padding:.75rem 1rem;border-bottom:1px solid var(--color-divider);font-variant-numeric:tabular-nums;white-space:nowrap}
 table tr:last-child td{border-bottom:none}
 table tr:hover td{background:color-mix(in oklch,var(--color-primary) 5%,transparent)}
+
+/* ── Badges ──────────────────────────────────────────────────────────────────── */
 .badge{display:inline-flex;align-items:center;padding:.2rem .6rem;border-radius:9999px;font-size:.7rem;font-weight:600;letter-spacing:.03em}
 .badge-equity{background:color-mix(in oklch,var(--color-blue) 15%,transparent);color:var(--color-blue)}
 .badge-fixed-income{background:color-mix(in oklch,var(--color-purple) 15%,transparent);color:var(--color-purple)}
@@ -101,16 +106,113 @@ table tr:hover td{background:color-mix(in oklch,var(--color-primary) 5%,transpar
 .badge-commodity{background:color-mix(in oklch,var(--color-gold) 15%,transparent);color:var(--color-gold)}
 .badge-crypto{background:color-mix(in oklch,var(--color-success) 15%,transparent);color:var(--color-success)}
 
-/* Footer */
+/* ── Footer ──────────────────────────────────────────────────────────────────── */
 footer{border-top:1px solid var(--color-border);padding-block:1.5rem;margin-top:2rem}
 .footer-inner{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem}
 .footer-note{font-size:.75rem;color:var(--color-text-faint)}
 
-/* Responsive */
+/* ── Responsive (existing) ───────────────────────────────────────────────────── */
 @media(max-width:600px){
   .kpi-grid{grid-template-columns:1fr 1fr}
   .header-right .live-badge{display:none}
 }
+
+/* ════════════════════════════════════════════════════════════════════════════
+   NEW CSS — extends above; no duplication of existing rules
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/* Navigation */
+nav.main-nav{display:flex;align-items:center;gap:.25rem}
+nav.main-nav a{font-size:.8rem;font-weight:500;padding:.4rem .75rem;border-radius:var(--radius-md);color:var(--color-text-muted);text-decoration:none;transition:all .18s;white-space:nowrap}
+nav.main-nav a:hover,nav.main-nav a.active{color:var(--color-text);background:color-mix(in oklch,var(--color-primary) 10%,transparent)}
+.hamburger{display:none;width:36px;height:36px;align-items:center;justify-content:center;border-radius:var(--radius-md);border:1px solid var(--color-border)}
+.mobile-nav{display:none;flex-direction:column;background:var(--color-surface);border-bottom:1px solid var(--color-border);padding:.75rem 1.5rem;gap:.25rem}
+.mobile-nav a{font-size:.875rem;padding:.5rem .75rem;border-radius:var(--radius-md);color:var(--color-text-muted);text-decoration:none}
+.mobile-nav a.active,.mobile-nav a:hover{color:var(--color-text);background:color-mix(in oklch,var(--color-primary) 10%,transparent)}
+@media(max-width:768px){nav.main-nav{display:none}.hamburger{display:flex}.mobile-nav.open{display:flex}}
+
+/* Range pills */
+.range-pills{display:flex;gap:.5rem;margin-bottom:1.5rem}
+.range-pill{font-size:.75rem;font-weight:600;padding:.35rem .875rem;border-radius:9999px;border:1px solid var(--color-border);color:var(--color-text-muted);cursor:pointer;transition:all .18s;background:none}
+.range-pill.active{background:var(--color-primary);color:#fff;border-color:var(--color-primary)}
+
+/* Section header */
+.section-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:1.5rem;gap:1rem}
+.section-header-left h2{font-family:var(--font-display);font-size:1.5rem;font-weight:400}
+.section-header-left p{font-size:.875rem;color:var(--color-text-muted);margin-top:.25rem}
+.section-header-actions{display:flex;gap:.5rem;flex-shrink:0}
+
+/* Tabs */
+.tabs-bar{display:flex;gap:0;border-bottom:1px solid var(--color-border);margin-bottom:1.5rem;overflow-x:auto}
+.tab-btn{font-size:.8rem;font-weight:600;padding:.625rem 1.25rem;border-bottom:2px solid transparent;color:var(--color-text-muted);cursor:pointer;background:none;border-top:none;border-left:none;border-right:none;white-space:nowrap;transition:all .18s}
+.tab-btn.active{color:var(--color-primary);border-bottom-color:var(--color-primary)}
+.tab-panel{display:none}.tab-panel.active{display:block}
+
+/* Extended badges */
+.badge-default{background:color-mix(in oklch,var(--color-text) 10%,transparent);color:var(--color-text-muted)}
+.badge-success{background:color-mix(in oklch,var(--color-success) 15%,transparent);color:var(--color-success)}
+.badge-warning{background:color-mix(in oklch,var(--color-gold) 15%,transparent);color:var(--color-gold)}
+.badge-danger{background:color-mix(in oklch,var(--color-error) 15%,transparent);color:var(--color-error)}
+.badge-info{background:color-mix(in oklch,var(--color-blue) 15%,transparent);color:var(--color-blue)}
+.badge-purple{background:color-mix(in oklch,var(--color-purple) 15%,transparent);color:var(--color-purple)}
+.badge-blue{background:color-mix(in oklch,var(--color-blue) 15%,transparent);color:var(--color-blue)}
+
+/* KPI card variants */
+.kpi-card.success{border-color:color-mix(in oklch,var(--color-success) 30%,transparent)}
+.kpi-card.warning{border-color:color-mix(in oklch,var(--color-gold) 30%,transparent)}
+.kpi-card.danger{border-color:color-mix(in oklch,var(--color-error) 30%,transparent)}
+.kpi-card.info{border-color:color-mix(in oklch,var(--color-blue) 30%,transparent)}
+
+/* Row tints */
+tr.row-breach td{background:color-mix(in oklch,var(--color-gold) 6%,transparent)!important}
+tr.row-exit td{background:color-mix(in oklch,var(--color-error) 6%,transparent)!important}
+tr.row-profit td:last-child{color:var(--color-success)}
+tr.row-loss td:last-child{color:var(--color-error)}
+
+/* Traffic light */
+.traffic-light{display:inline-flex;align-items:center;gap:.4rem;font-size:.875rem;font-variant-numeric:tabular-nums}
+.tl-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.tl-green{background:var(--color-success)}.tl-amber{background:var(--color-gold)}.tl-red{background:var(--color-error)}
+
+/* Placeholder section */
+.placeholder-section{border:2px dashed var(--color-border);border-radius:var(--radius-lg);padding:2rem;margin:1rem 0;text-align:center}
+.placeholder-icon{font-size:1.5rem;margin-bottom:.5rem}
+.placeholder-title{font-weight:600;margin-bottom:.25rem;color:var(--color-text-muted)}
+.placeholder-desc{font-size:.8rem;color:var(--color-text-faint);max-width:480px;margin-inline:auto}
+
+/* Policy card */
+.policy-card{background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius-lg);padding:1.25rem 1.5rem;display:flex;flex-direction:column;gap:.5rem}
+.policy-card-header{display:flex;align-items:center;justify-content:space-between;gap:.75rem}
+.policy-card-title{font-weight:600;font-size:.9rem}
+.policy-card-desc{font-size:.8rem;color:var(--color-text-muted);line-height:1.5}
+.policy-card-action a{font-size:.8rem;color:var(--color-primary);text-decoration:none;font-weight:500}
+
+/* Alert panels */
+.alert-panel{border-radius:var(--radius-lg);padding:1rem 1.25rem;font-size:.875rem;line-height:1.6;margin-bottom:1rem}
+.alert-danger{background:color-mix(in oklch,var(--color-error) 8%,transparent);border:1px solid color-mix(in oklch,var(--color-error) 25%,transparent);color:var(--color-error)}
+.alert-warning{background:color-mix(in oklch,var(--color-gold) 8%,transparent);border:1px solid color-mix(in oklch,var(--color-gold) 25%,transparent);color:var(--color-gold)}
+.alert-info{background:color-mix(in oklch,var(--color-blue) 8%,transparent);border:1px solid color-mix(in oklch,var(--color-blue) 25%,transparent);color:var(--color-blue)}
+
+/* Buttons */
+.btn{display:inline-flex;align-items:center;gap:.375rem;font-size:.8rem;font-weight:600;padding:.45rem 1rem;border-radius:var(--radius-md);cursor:pointer;transition:all .18s;text-decoration:none;border:1px solid transparent}
+.btn-primary{background:var(--color-primary);color:#fff}
+.btn-primary:hover{background:var(--color-primary-hover)}
+.btn-outline{background:transparent;border-color:var(--color-border);color:var(--color-text-muted)}
+.btn-outline:hover{background:var(--color-surface-2);color:var(--color-text)}
+
+/* Misc layout */
+.empty-state{text-align:center;padding:3rem 1.5rem;color:var(--color-text-muted)}
+.empty-state .empty-icon{font-size:2rem;margin-bottom:.75rem}
+.empty-state p{font-size:.875rem;max-width:36ch;margin-inline:auto;margin-top:.25rem}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem}
+.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem}
+@media(max-width:768px){.grid-2,.grid-3{grid-template-columns:1fr}}
+.stepper{display:flex;gap:0;overflow-x:auto;margin-bottom:2rem}
+.step{flex:1;min-width:120px;padding:1rem;border:1px solid var(--color-border);background:var(--color-surface);text-align:center;font-size:.75rem;font-weight:600;border-right:none}
+.step:last-child{border-right:1px solid var(--color-border)}
+.step-num{font-size:1.25rem;font-weight:700;color:var(--color-primary);margin-bottom:.25rem}
+.heatmap-table td{width:60px;text-align:center;padding:.4rem .3rem;font-size:.75rem;font-variant-numeric:tabular-nums;border-radius:3px}
+.heatmap-table th{font-size:.7rem;padding:.4rem .3rem;text-align:center}
 </style>
 </head>
 <body>
@@ -133,76 +235,59 @@ footer{border-top:1px solid var(--color-border);padding-block:1.5rem;margin-top:
         <p>Demo Investment Portfolio</p>
       </div>
     </div>
+    <nav class="main-nav">
+      <a href="#/overview">Overview</a>
+      <a href="#/dashboard">Dashboard</a>
+      <a href="#/performance">Performance</a>
+      <a href="#/risk">Risk</a>
+      <a href="#/positions">Positions</a>
+      <a href="#/trades">Trades</a>
+      <a href="#/process">Process</a>
+      <a href="#/governance">Governance</a>
+      <a href="#/research">Research</a>
+      <a href="#/methodology">Methodology</a>
+      <a href="#/downloads">Downloads</a>
+      <a href="#/about">About</a>
+    </nav>
     <div class="header-right">
       <div class="live-badge"><span class="live-dot"></span>Live</div>
+      <button class="hamburger" id="hamburgerBtn" aria-label="Menu">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+        </svg>
+      </button>
       <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
       </button>
+      <a href="https://github.com/Morancian321/portfolio" target="_blank" rel="noopener" class="btn btn-outline">GitHub ↗</a>
     </div>
   </div>
+  <nav class="mobile-nav" id="mobileNav">
+    <a href="#/overview">Overview</a>
+    <a href="#/dashboard">Dashboard</a>
+    <a href="#/performance">Performance</a>
+    <a href="#/risk">Risk</a>
+    <a href="#/positions">Positions</a>
+    <a href="#/trades">Trades</a>
+    <a href="#/process">Process</a>
+    <a href="#/governance">Governance</a>
+    <a href="#/research">Research</a>
+    <a href="#/methodology">Methodology</a>
+    <a href="#/downloads">Downloads</a>
+    <a href="#/about">About</a>
+  </nav>
 </header>
 
 <main>
   <div class="container">
     <div class="error-banner" id="errorBanner"></div>
-
-    <!-- KPIs -->
-    <div class="kpi-grid" id="kpiGrid">
-      <div class="kpi-card"><div class="kpi-label">Portfolio Value</div><div class="kpi-value" id="kpiValue">—</div><div class="kpi-delta neutral" id="kpiInception">Since inception</div></div>
-      <div class="kpi-card"><div class="kpi-label">Total P&amp;L</div><div class="kpi-value" id="kpiPnl">—</div><div class="kpi-delta" id="kpiPnlPct">—</div></div>
-      <div class="kpi-card"><div class="kpi-label">Sharpe Ratio</div><div class="kpi-value" id="kpiSharpe">—</div><div class="kpi-delta neutral">Annualised</div></div>
-      <div class="kpi-card"><div class="kpi-label">Max Drawdown</div><div class="kpi-value" id="kpiDrawdown">—</div><div class="kpi-delta neutral">Peak to trough</div></div>
-      <div class="kpi-card"><div class="kpi-label">Positions</div><div class="kpi-value" id="kpiPositions">—</div><div class="kpi-delta neutral" id="kpiAssetClasses">—</div></div>
-      <div class="kpi-card"><div class="kpi-label">Cash</div><div class="kpi-value" id="kpiCash">—</div><div class="kpi-delta neutral" id="kpiCashPct">—</div></div>
-    </div>
-
-    <!-- Charts -->
-    <div class="charts-grid section-gap">
-      <div class="chart-card">
-        <div class="chart-title">NAV vs Benchmark (<span id="benchLabel">SPY</span>)</div>
-        <div class="chart-wrap"><canvas id="navChart"></canvas></div>
-      </div>
-      <div class="chart-card">
-        <div class="chart-title">Asset Allocation</div>
-        <div class="chart-wrap"><canvas id="allocChart"></canvas></div>
-      </div>
-    </div>
-
-    <!-- Holdings Table -->
-    <div class="table-card section-gap">
-      <div class="table-header"><h2>Open Positions</h2></div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th><th>Class</th><th>Direction</th>
-              <th>Qty</th><th>Avg Price</th><th>Live Price</th>
-              <th>Market Value</th><th>Unrealised P&amp;L</th><th>Weight</th><th>Open Date</th>
-            </tr>
-          </thead>
-          <tbody id="holdingsBody"></tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- Closed Trades -->
-    <div class="table-card section-gap" id="closedCard" style="display:none">
-      <div class="table-header"><h2>Closed Trades</h2></div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr><th>Ticker</th><th>Class</th><th>Qty</th><th>Entry</th><th>Exit</th><th>Realised P&amp;L (USD)</th><th>Close Date</th></tr>
-          </thead>
-          <tbody id="closedBody"></tbody>
-        </table>
-      </div>
-    </div>
+    <div id="appRoot"></div>
   </div>
 </main>
 
 <footer>
   <div class="container footer-inner">
-    <span class="footer-note">Demo portfolio for illustrative purposes only. Not financial advice.</span>
+    <span class="footer-note">Demo portfolio — not financial advice. Data sourced from Google Sheets + yfinance.</span>
     <span class="footer-note" id="lastUpdated"></span>
   </div>
 </footer>
@@ -225,206 +310,14 @@ footer{border-top:1px solid var(--color-border);padding-block:1.5rem;margin-top:
   });
 })();
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-const fmt = (n, dec=2) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', {minimumFractionDigits:dec, maximumFractionDigits:dec});
-const fmtPct = (n) => n == null ? '—' : (n >= 0 ? '+' : '') + Number(n).toFixed(2) + '%';
-const badgeClass = ac => {
-  const m = {'Equity':'badge-equity','Fixed Income':'badge-fixed-income','Infrastructure':'badge-infrastructure','Commodity':'badge-commodity','Crypto':'badge-crypto'};
-  return m[ac] || 'badge-equity';
-};
+// Temporary: hide loading screen after 1s until JS is added in 2B
+setTimeout(() => {
+  document.getElementById('loadingScreen').classList.add('hidden');
+}, 1000);
 
-// ── Chart defaults ────────────────────────────────────────────────────────────
-function chartDefaults() {
-  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
-  return {
-    grid: dark ? '#21262d' : '#e5e4e0',
-    text: dark ? '#8b949e' : '#7a7974',
-    tooltip_bg: dark ? '#1c2128' : '#ffffff',
-    tooltip_border: dark ? '#30363d' : '#d4d1ca',
-  };
-}
-
-// ── Fetch & Render ────────────────────────────────────────────────────────────
-const API = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost'
-  ? 'http://localhost:5000'
-  : 'https://portfolio-zaca.onrender.com';  
-
-let navChartInst, allocChartInst;
-
-async function loadPortfolio() {
-  try {
-    const res = await fetch(API + '/api/portfolio');
-    if (!res.ok) throw new Error('API returned ' + res.status);
-    const d = await res.json();
-    if (d.error) throw new Error(d.error);
-    render(d);
-    document.getElementById('loadingScreen').classList.add('hidden');
-    document.getElementById('lastUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString();
-  } catch(e) {
-    document.getElementById('loadingScreen').classList.add('hidden');
-    const b = document.getElementById('errorBanner');
-    b.style.display = 'block';
-    b.textContent = 'Could not load portfolio data: ' + e.message;
-  }
-}
-
-function render(d) {
-  const m = d.metrics || {};
-
-  // KPIs
-  document.getElementById('kpiValue').textContent = fmt(d.current_value, 0);
-  document.getElementById('kpiInception').textContent = 'Since ' + d.inception_date;
-
-  const pnl = d.total_pnl || 0;
-  const pnlEl = document.getElementById('kpiPnl');
-  pnlEl.textContent = fmt(pnl, 0);
-  pnlEl.className = 'kpi-value ' + (pnl >= 0 ? 'up' : 'down');
-  const pnlPctEl = document.getElementById('kpiPnlPct');
-  pnlPctEl.textContent = fmtPct(m.total_return_pct);
-  pnlPctEl.className = 'kpi-delta ' + (pnl >= 0 ? 'up' : 'down');
-
-  document.getElementById('kpiSharpe').textContent = m.Sharpe_ratio != null ? m.Sharpe_ratio.toFixed(2) : '—';
-  const ddEl = document.getElementById('kpiDrawdown');
-  ddEl.textContent = m.max_drawdown_pct != null ? '-' + m.max_drawdown_pct.toFixed(2) + '%' : '—';
-  ddEl.className = 'kpi-value down';
-
-  document.getElementById('kpiPositions').textContent = d.open_positions?.length || 0;
-  const classes = [...new Set((d.open_positions||[]).map(p=>p.asset_class))];
-  document.getElementById('kpiAssetClasses').textContent = classes.length + ' asset classes';
-
-  document.getElementById('kpiCash').textContent = fmt(d.cash, 0);
-  const cashPct = d.current_value ? (d.cash / d.current_value * 100).toFixed(1) : 0;
-  document.getElementById('kpiCashPct').textContent = cashPct + '% of portfolio';
-
-  document.getElementById('benchLabel').textContent = d.benchmark;
-
-  // NAV Chart
-  const c = chartDefaults();
-  const navCtx = document.getElementById('navChart').getContext('2d');
-  if (navChartInst) navChartInst.destroy();
-  navChartInst = new Chart(navCtx, {
-    type: 'line',
-    data: {
-      datasets: [
-        {
-          label: 'Portfolio',
-          data: (d.nav_series||[]).map(x=>({x:x.date, y:x.value})),
-          borderColor: '#4f98a3',
-          backgroundColor: 'rgba(79,152,163,.08)',
-          borderWidth: 2,
-          pointRadius: 0,
-          fill: true,
-          tension: .3,
-        },
-        {
-          label: d.benchmark,
-          data: (d.benchmark_series||[]).map(x=>({x:x.date, y:x.value})),
-          borderColor: '#d29922',
-          borderWidth: 1.5,
-          borderDash: [4,3],
-          pointRadius: 0,
-          fill: false,
-          tension: .3,
-        }
-      ]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      interaction: {mode:'index', intersect:false},
-      plugins: {
-        legend: {labels:{color:c.text, font:{size:11}, boxWidth:24, padding:16}},
-        tooltip: {
-          backgroundColor: c.tooltip_bg,
-          borderColor: c.tooltip_border,
-          borderWidth: 1,
-          titleColor: c.text,
-          bodyColor: c.text,
-          callbacks: {
-            label: ctx => ' ' + ctx.dataset.label + ': $' + ctx.parsed.y.toLocaleString('en-US',{maximumFractionDigits:0})
-          }
-        }
-      },
-      scales: {
-        x: {type:'time', time:{unit:'month'}, grid:{color:c.grid}, ticks:{color:c.text, font:{size:11}}},
-        y: {grid:{color:c.grid}, ticks:{color:c.text, font:{size:11}, callback: v=>'$'+Number(v).toLocaleString('en-US',{maximumFractionDigits:0})}}
-      }
-    }
-  });
-
-  // Allocation Donut
-  const allocCtx = document.getElementById('allocChart').getContext('2d');
-  if (allocChartInst) allocChartInst.destroy();
-  const alloc = d.allocation || {};
-  const allocColors = ['#4f98a3','#d29922','#ffa657','#bc8cff','#3fb950','#58a6ff','#f85149','#6e7681'];
-  allocChartInst = new Chart(allocCtx, {
-    type: 'doughnut',
-    data: {
-      labels: Object.keys(alloc),
-      datasets: [{
-        data: Object.values(alloc),
-        backgroundColor: allocColors.slice(0, Object.keys(alloc).length),
-        borderWidth: 2,
-        borderColor: document.documentElement.getAttribute('data-theme') === 'dark' ? '#161b22' : '#f9f8f5',
-      }]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      cutout: '62%',
-      plugins: {
-        legend: {position:'bottom', labels:{color:c.text, font:{size:11}, padding:12, boxWidth:12}},
-        tooltip: {
-          backgroundColor: c.tooltip_bg,
-          borderColor: c.tooltip_border,
-          borderWidth: 1,
-          titleColor: c.text,
-          bodyColor: c.text,
-          callbacks: {label: ctx => ' ' + ctx.label + ': ' + ctx.parsed.toFixed(1) + '%'}
-        }
-      }
-    }
-  });
-
-  // Holdings Table
-  const tbody = document.getElementById('holdingsBody');
-  tbody.innerHTML = '';
-  (d.open_positions||[]).sort((a,b)=>b.mv_usd-a.mv_usd).forEach(p => {
-    const pnlClass = p.unreal_pnl >= 0 ? 'up' : 'down';
-    tbody.innerHTML += `<tr>
-      <td><strong>${p.name}</strong><br><span style="font-size:.75rem;color:var(--color-text-muted)">${p.ticker}</span></td>
-      <td><span class="badge ${badgeClass(p.asset_class)}">${p.asset_class}</span></td>
-      <td>${p.direction}</td>
-      <td>${p.quantity.toLocaleString()}</td>
-      <td>${p.avg_price != null ? p.avg_price.toLocaleString() + ' ' + (p.currency || '') : '—'}</td>
-      <td>${p.live_price != null ? p.live_price.toLocaleString() + ' ' + (p.currency || '') : '—'}</td>
-      <td>${fmt(p.mv_usd, 0)}</td>
-      <td class="${pnlClass}">${fmt(p.unreal_pnl, 0)} (${fmtPct(p.unreal_pct)})</td>
-      <td>${p.weight_pct != null ? p.weight_pct.toFixed(1)+'%' : '—'}</td>
-      <td>${p.open_date || '—'}</td>
-    </tr>`;
-  });
-
-  // Closed Trades
-  const closed = d.closed_trades || [];
-  if (closed.length > 0) {
-    document.getElementById('closedCard').style.display = '';
-    const ctbody = document.getElementById('closedBody');
-    ctbody.innerHTML = '';
-    closed.forEach(t => {
-      const pnl = t.realised_pnl_usd || 0;
-      ctbody.innerHTML += `<tr>
-        <td><strong>${t.ticker}</strong></td>
-        <td><span class="badge ${badgeClass(t.asset_class)}">${t.asset_class}</span></td>
-        <td>${t.qty?.toLocaleString() || '—'}</td>
-        <td>${t.entry_price?.toLocaleString() || '—'}</td>
-        <td>${t.exit_price?.toLocaleString() || '—'}</td>
-        <td class="${pnl>=0?'up':'down'}">${fmt(pnl)}</td>
-        <td>${t.date || '—'}</td>
-      </tr>`;
-    });
-  }
-}
-
-loadPortfolio();
+document.getElementById('hamburgerBtn').addEventListener('click', () => {
+  document.getElementById('mobileNav').classList.toggle('open');
+});
 </script>
 </body>
 </html>
