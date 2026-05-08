@@ -283,6 +283,13 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
     prices = prices.ffill().bfill()
     prices.index = prices.index.tz_localize(None)
 
+    volatile_tickers = ["BTC-USD", "COIN"]
+    for col in prices.columns:
+        if col not in volatile_tickers:
+            pct = prices[col].pct_change().abs()
+            prices[col] = prices[col].where(pct < 0.15, other=prices[col].shift(1))
+    prices = prices.ffill()
+
     from collections import defaultdict
     events_by_date = defaultdict(list)
     for t in trades:
