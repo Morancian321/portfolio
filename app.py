@@ -9,8 +9,10 @@
 #   5. STRIP_OUTLIERS: threshold raised to 0.30 (30%); comment explains data-quality purpose.
 #   6. FX EXPOSURE: cash balance (in base currency) now included so percentages sum ~100%.
 #   7. CLOSE ACTION: always treated as full close; qty_held used (not trade qty); documented.
-#   8. NAV_OVERRIDES: new sheet tab allows manual price corrections for bad YFinance data.
-#      Keyed by (date, yf_ticker); applied in build_nav_curve before FX conversion.
+#   8. NAV_OVERRIDES: manual price corrections injected into prices DataFrame BEFORE
+#      strip_outliers runs, so the clean price is ffill'd forward correctly.
+#      Previous approach applied overrides inside the daily loop after strip_outliers had
+#      already baked the bad ffill'd value into the DataFrame — so the fix had no effect.
 # SAFE: Sharpe, NAV curve logic, hit_rate, rolling_vol — unchanged.
 # ADDED: test harness under if __name__ == '__main__' for regressions.
 
@@ -102,6 +104,37 @@ def parse_nav_overrides(rows):
             key = (str(row["date"]), str(row["ticker"]))
             overrides[key] = float(row["value"])
     return overrides
+
+def apply_nav_overrides_to_prices(prices, nav_overrides):
+    """
+    FIX 8 (real fix): Stamp override values directly into the prices DataFrame
+    BEFORE strip_outliers is called.
+
+    Why this matters:
+      strip_outliers masks spikes and then ffill()s. If a bad YFinance price sits
+      in the DataFrame when strip_outliers runs, the ffill propagates that bad value
+      forward across every subsequent trading day. Applying the override after the
+      fact (inside the daily loop) only fixes the exact date row — all the ffill'd
+      days downstream still carry the wrong price.
+
+    By injecting overrides here, strip_outliers sees the corrected value and
+    ffills the clean price forward instead.
+
+    Dates in nav_overrides use YYYY-MM-DD strings. The prices index is timezone-aware
+    (UTC) from yfinance. We normalise both to date-only for matching.
+    """
+    if not nav_overrides:
+        return prices
+
+    # Build a date-string -> Timestamp index map for fast lookup
+    idx_map = {ts.strftime("%Y-%m-%d"): ts for ts in prices.index}
+
+    for (date_str, ytk), price in nav_overrides.items():
+        if ytk in prices.columns and date_str in idx_map:
+            ts = idx_map[date_str]
+            prices.at[ts, ytk] = price
+
+    return prices
 
 def parse_config(config_rows):
     cfg = {r["key"]: r["value"] for r in config_rows}
@@ -309,9 +342,9 @@ def build_positions(trades, fx_rates, manual_map):
     return open_positions, closed_trades
 
 def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None):
-    # FIX 8: nav_overrides is a dict keyed by (date_str, yf_ticker) -> corrected price.
-    # When a key matches, the override replaces the raw YFinance price for that day,
-    # before normalize_lse_price and FX conversion are applied.
+    # FIX 8: nav_overrides are injected into the prices DataFrame via
+    # apply_nav_overrides_to_prices() BEFORE strip_outliers runs.
+    # This ensures the clean price is what gets ffill'd forward, not the bad YF value.
     if nav_overrides is None:
         nav_overrides = {}
 
@@ -335,6 +368,10 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None)
         prices = raw["Close"]
     else:
         prices = raw[["Close"]] if "Close" in raw.columns else raw
+
+    # FIX 8: Inject overrides into the raw DataFrame BEFORE strip_outliers.
+    # strip_outliers will then ffill the corrected price forward correctly.
+    prices = apply_nav_overrides_to_prices(prices, nav_overrides)
 
     # FIX 5 (applied here too): use updated 0.30 threshold from strip_outliers.
     prices = strip_outliers(prices)
@@ -420,13 +457,8 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None)
             avg_cost_gbp = h.get("avg_cost_gbp", 0)
             try:
                 if ytk in prices.columns:
+                    # Overrides are already baked into the DataFrame at this point.
                     p_raw = float(prices.loc[:dt, ytk].iloc[-1])
-                    # FIX 8: Apply nav_override if one exists for this ticker/date.
-                    # The override replaces the raw YFinance price before any further
-                    # normalisation (LSE pence->pounds) or FX conversion is applied.
-                    override_key = (ds, ytk)
-                    if override_key in nav_overrides:
-                        p_raw = nav_overrides[override_key]
                     p_gbp = normalize_lse_price(p_raw, avg_cost_gbp) if is_lse(ytk) else p_raw
                     port_val += p_gbp * fx_r * h["qty"]
                 else:
@@ -708,12 +740,6 @@ def _run_tests():
 
     # ------------------------------------------------------------------
     # TEST 1: Sortino ratio — standard downside deviation
-    # Known series: 5 returns, rf_daily = 0
-    # Returns: [0.01, -0.02, 0.03, -0.01, 0.02]  N=5
-    # downside terms (min(r,0)^2): 0, 0.0004, 0, 0.0001, 0
-    # downside_var = (0.0004 + 0.0001) / 5 = 0.0001  -> std = 0.01
-    # mean_r = (0.01-0.02+0.03-0.01+0.02)/5 = 0.006
-    # sortino (unannualised) = 0.006 / 0.01 = 0.6  annualised * sqrt(252)
     rf_daily   = 0.0
     returns    = [0.01, -0.02, 0.03, -0.01, 0.02]
     n          = len(returns)
@@ -727,7 +753,6 @@ def _run_tests():
     else:
         print(f"  [PASS] Sortino = {sortino:.4f}")
 
-    # All returns >= rf → downside_std = 0 → sortino should be 0 (no crash)
     returns_all_pos = [0.01, 0.02, 0.03]
     dsq2 = sum(min(r, 0) ** 2 for r in returns_all_pos)
     d_std2 = math.sqrt(dsq2 / len(returns_all_pos))
@@ -739,9 +764,6 @@ def _run_tests():
 
     # ------------------------------------------------------------------
     # TEST 2: calc_metrics — max drawdown and trough date
-    # Synthetic NAV: starts 100, rises to 110, falls to 88, recovers to 95.
-    # Max drawdown = (110 - 88) / 110 = 22/110 ≈ 20%
-    # Trough should be at index 3 (value 88), date '2024-01-04'
     nav = [
         {"date": "2024-01-01", "value": 100},
         {"date": "2024-01-02", "value": 105},
@@ -762,10 +784,6 @@ def _run_tests():
 
     # ------------------------------------------------------------------
     # TEST 3: Cash calculation — proceeds include principal + P&L
-    # starting_capital = 10000
-    # open position cost_usd = 3000
-    # closed trade: cost_usd_sold=2000, realised_pnl_usd=200  -> proceeds=2200
-    # expected cash = 10000 - 3000 + 2200 = 9200
     starting  = 10000.0
     total_cost_open = 3000.0
     closed_t = [{"cost_usd_sold": 2000.0, "realised_pnl_usd": 200.0}]
@@ -778,8 +796,6 @@ def _run_tests():
 
     # ------------------------------------------------------------------
     # TEST 4: FX exposure sums to ~100% when cash included
-    # Positions: 3000 USD, 2000 USD-equiv GBP.  cash=5000 USD (base).
-    # total_val = 10000.  USD_pct = (3000+5000)/10000*100 = 80, GBP_pct=20.
     test_positions = [
         {"currency": "USD", "mv_usd": 3000},
         {"currency": "GBP", "mv_usd": 2000},
@@ -810,6 +826,20 @@ def _run_tests():
         errors.append(f"parse_nav_overrides FAIL: got {ov}")
     else:
         print("  [PASS] parse_nav_overrides filters correctly")
+
+    # ------------------------------------------------------------------
+    # TEST 6: apply_nav_overrides_to_prices — override is stamped into DataFrame
+    # Build a tiny prices DataFrame with a bad IWDA.L price on 2026-05-07,
+    # apply the override, and verify the value is corrected before strip_outliers runs.
+    idx = pd.to_datetime(["2026-05-06", "2026-05-07", "2026-05-08"])
+    df_test = pd.DataFrame({"IWDA.L": [119.5, 9999.0, 120.2]}, index=idx)
+    ov_map  = {("2026-05-07", "IWDA.L"): 120.1}
+    df_fixed = apply_nav_overrides_to_prices(df_test.copy(), ov_map)
+    corrected = df_fixed.at[pd.Timestamp("2026-05-07"), "IWDA.L"]
+    if abs(corrected - 120.1) > 1e-6:
+        errors.append(f"apply_nav_overrides_to_prices FAIL: got {corrected}, expected 120.1")
+    else:
+        print(f"  [PASS] apply_nav_overrides_to_prices stamped correctly ({corrected})")
 
     # ------------------------------------------------------------------
     if errors:
