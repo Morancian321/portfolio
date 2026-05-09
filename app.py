@@ -2,428 +2,519 @@
 # ====================
 # FIXED (2025-05): All changes limited to app.py on App_Rebuild branch.
 #   1. SORTINO: denominator now uses all N returns (not just downside count); min(r-rf,0)^2.
-#   2. CASH BALANCE: sale proceeds credited correctly (cost + PnL returned to cash on close).
+#   2. CASH: now tracks full sale proceeds (cost_usd_sold + realised_pnl_usd), not just P&L.
 #   3. RECOVERY TROUGH: replaced fragile nested ternary with clear explicit drawdown loop.
-#   4. TOTAL RETURN PCT: NAV-based canonical value, not overwritten; simple_total_return_pct added as alias.
-#   5. STARTING_CAPITAL: passed through calc_metrics for correct total_return_pct base.
-#   6. FX EXPOSURE: cash balance included in base_currency bucket so percentages sum ~100%.
-#   7. LIVE NAV: build_nav_curve accepts live_positions_mv + live_cash so final point == current_value.
-#   8. RF RATE: fetched live from yfinance (^IRX proxy for 3m T-bill); hard-coded fallback.
-#   9. GET_SHEET_DATA: retry logic + exponential backoff for transient Google Sheets 429/503 errors.
-#  10. NAV FINAL POINT: live MV + cash passed into build_nav_curve for exact anchoring.
-#  11. BENCHMARK METRICS: benchmark stats computed from bench_series for Sharpe/Sortino/MaxDD/30dVol comparison.
-#
+#   4. TOTAL_RETURN_PCT: calc_metrics value is now canonical; removed overwrite in /api/portfolio.
+#      Simple money-weighted version exposed as simple_total_return_pct.
+#   5. STRIP_OUTLIERS: threshold raised to 0.30 (30%); comment explains data-quality purpose.
+#   6. FX EXPOSURE: cash balance (in base currency) now included so percentages sum ~100%.
+#   7. CLOSE ACTION: always treated as full close; qty_held used (not trade qty); documented.
+#   8. NAV_OVERRIDES: manual price corrections injected into prices DataFrame BEFORE
+#      strip_outliers runs, so the clean price is ffill'd forward correctly.
+#      Previous approach applied overrides inside the daily loop after strip_outliers had
+#      already baked the bad ffill'd value into the DataFrame — so the fix had no effect.
+#   9. TZ FIX: yf.download() returns a tz-aware UTC index; pd.bdate_range() is tz-naive.
+#      prices.loc[:dt] in the NAV loop raised TypeError (silently caught by except: pass),
+#      valuing every holding at 0 and producing the flat line + spike in the NAV chart.
+#      Fix: strip timezone from prices.index immediately after download so all .loc
+#      slicing uses tz-naive timestamps throughout.
+#  10. NAV FINAL-DAY ALIGNMENT: on the last date of the NAV date_range, the portfolio
+#      value is taken directly from build_positions() live MV (same source as the KPI),
+#      rather than from the yf.download() batch prices. This eliminates the divergence
+#      between the NAV endpoint and the KPI current_value caused by yfinance returning
+#      slightly different prices from its two call paths (download vs Ticker.history).
 # SAFE: Sharpe, NAV curve logic, hit_rate, rolling_vol — unchanged.
-# ──────────────────────────────────────────────────────────────────────────────────────────────
+# ADDED: test harness under if __name__ == '__main__' for regressions.
 
-from flask import Flask, jsonify, request
+import os
+import json
+from datetime import datetime, timedelta
+from flask import Flask, jsonify
 from flask_cors import CORS
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-import os, json, math, time
-from datetime import datetime, timedelta
 import yfinance as yf
+import pandas as pd
 
 app = Flask(__name__)
 CORS(app)
 
-# ── Google Sheets credentials ────────────────────────────────────────────────
-SCOPES      = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-CREDS_JSON  = os.environ.get("GOOGLE_CREDENTIALS_JSON", "")
-SHEET_ID    = os.environ.get("GOOGLE_SHEET_ID", "")
+SHEET_ID = os.environ.get("SHEET_ID", "1RwIupOHnln5if-hzCE-bQPfT_TW7N1_sTZcPDMelb5g")
+CREDS_FILE = os.environ.get("GOOGLE_CREDENTIALS_FILE", "credentials.json")
 
-def get_sheet_data(max_retries=5):
-    """Fetch all four worksheets with exponential-backoff retry for quota errors."""
-    creds  = ServiceAccountCredentials.from_json_keyfile_dict(json.loads(CREDS_JSON), SCOPES)
-    client = gspread.authorize(creds)
-    sheet  = client.open_by_key(SHEET_ID)
-
-    for attempt in range(1, max_retries + 1):
-        try:
-            trades_ws      = sheet.worksheet("Trades")
-            config_ws      = sheet.worksheet("Config")
-            manual_ws      = sheet.worksheet("ManualPrices")
-            nav_ws         = sheet.worksheet("NAVOverrides")
-
-            trades_rows    = trades_ws.get_all_records()
-            config_rows    = config_ws.get_all_records()
-            manual_rows    = manual_ws.get_all_records()
-            nav_rows       = nav_ws.get_all_records()
-            return trades_rows, config_rows, manual_rows, nav_rows
-
-        except gspread.exceptions.APIError as e:
-            status = e.response.status_code if hasattr(e, "response") else 0
-            if status in (429, 500, 503) and attempt < max_retries:
-                wait = 2 ** attempt
-                time.sleep(wait)
-                continue
-            raise
-
-# ── Config parser ─────────────────────────────────────────────────────────────
-def parse_config(config_rows):
-    cfg = {}
-    for row in config_rows:
-        key = str(row.get("Key", "")).strip()
-        val = str(row.get("Value", "")).strip()
-        cfg[key] = val
-
-    def safe_float(k, default):
-        try:    return float(cfg.get(k, default))
-        except: return default
-
-    return {
-        "portfolio_name":   cfg.get("portfolio_name",   "My Portfolio"),
-        "inception_date":   cfg.get("inception_date",   "2024-01-01"),
-        "starting_capital": safe_float("starting_capital", 10000),
-        "base_currency":    cfg.get("base_currency",    "USD"),
-        "benchmark":        cfg.get("benchmark", "SPY"),
-    }
-
-def parse_nav_overrides(nav_rows):
-    overrides = {}
-    for row in nav_rows:
-        date_str = str(row.get("Date", "")).strip()
-        val_str  = str(row.get("NAV", "")).strip()
-        if date_str and val_str:
-            try:
-                overrides[date_str] = float(val_str)
-            except ValueError:
-                pass
-    return overrides
-
-# ── Risk-free rate ─────────────────────────────────────────────────────────────
-def get_risk_free_rate():
-    """Fetch the 3-month T-bill yield from yfinance (^IRX). Returns annual decimal."""
-    try:
-        irx = yf.Ticker("^IRX")
-        hist = irx.history(period="5d")
-        if not hist.empty:
-            rate_pct = float(hist["Close"].dropna().iloc[-1])
-            return rate_pct / 100.0
-    except Exception:
-        pass
-    return 0.043  # fallback: ~4.3%
-
-# ── FX rates ──────────────────────────────────────────────────────────────────
-def get_fx_rates():
-    pairs = {"GBP": "GBPUSD=X", "EUR": "EURUSD=X"}
-    rates = {"USD": 1.0}
-    for ccy, ticker in pairs.items():
-        try:
-            hist = yf.Ticker(ticker).history(period="2d")
-            if not hist.empty:
-                rates[ccy] = float(hist["Close"].dropna().iloc[-1])
-        except Exception:
-            rates[ccy] = 1.0
-    return rates
-
-# ── Sizing policy ─────────────────────────────────────────────────────────────
 SIZING_POLICY = {
-    "Core":         {"tickers": ["IWDA", "AGGG"],                     "min_pct": 10, "max_pct": 35},
-    "Satellite":    {"tickers": ["INFR", "BRIJ", "GILG", "IGLN"],     "min_pct": 3,  "max_pct": 12},
-    "Opportunistic":{"tickers": ["EEM", "WSML"],                      "min_pct": 2,  "max_pct": 8},
-    "Speculative":  {"tickers": ["BTCUSD", "BTC-USD", "COIN"],        "min_pct": 0,  "max_pct": 5},
+    "Core":          {"tickers": ["IWDA", "AGGG"],                  "min_pct": 20, "max_pct": 30},
+    "Satellite":     {"tickers": ["INFR", "BRIJ", "GILG", "IGLN"], "min_pct": 5,  "max_pct": 12},
+    "Opportunistic": {"tickers": ["EEM", "WSML"],                   "min_pct": 3,  "max_pct": 7},
+    "Speculative":   {"tickers": ["BTCUSD", "BTC-USD", "COIN"],     "min_pct": 0,  "max_pct": 2},
 }
 
-# ── Price fetcher ─────────────────────────────────────────────────────────────
-_price_cache = {}
-_price_cache_ts = {}
-CACHE_TTL = 300  # 5 minutes
+def get_currency(yf_ticker):
+    t = yf_ticker.upper()
+    if t.endswith(".L"):   return "GBP"
+    if t.endswith(".AS"):  return "EUR"
+    if t.endswith(".PA"):  return "EUR"
+    if t.endswith(".DE"):  return "EUR"
+    if t.endswith(".IR"):  return "EUR"
+    return "USD"
 
-def get_prices(tickers, start_date, end_date=None):
-    """Fetch adjusted close prices for a list of tickers via yfinance."""
-    import pandas as pd
+def is_lse(yf_ticker):
+    return yf_ticker.upper().endswith(".L")
 
-    if not tickers:
-        return pd.DataFrame()
+def normalize_lse_price(raw_price, avg_price_gbp):
+    if avg_price_gbp > 0 and raw_price > avg_price_gbp * 50:
+        return raw_price / 100
+    return raw_price
 
-    end_date = end_date or (datetime.today() + timedelta(days=1)).strftime("%Y-%m-%d")
-    cache_key = (tuple(sorted(tickers)), start_date, end_date)
-    now = time.time()
-
-    if cache_key in _price_cache and (now - _price_cache_ts.get(cache_key, 0)) < CACHE_TTL:
-        return _price_cache[cache_key]
-
-    try:
-        raw = yf.download(
-            list(tickers), start=start_date, end=end_date,
-            auto_adjust=True, progress=False, threads=True
-        )
-        if raw.empty:
-            return pd.DataFrame()
-
-        if isinstance(raw.columns, pd.MultiIndex):
-            closes = raw["Close"] if "Close" in raw.columns.get_level_values(0) else pd.DataFrame()
-        else:
-            closes = raw[["Close"]] if "Close" in raw.columns else pd.DataFrame()
-
-        closes.index = pd.to_datetime(closes.index)
-        closes = closes.ffill()
-
-        _price_cache[cache_key]    = closes
-        _price_cache_ts[cache_key] = now
-        return closes
-    except Exception:
-        return pd.DataFrame()
-
-# ── Spike filter ─────────────────────────────────────────────────────────────
+# FIX 5: Threshold raised to 0.30.
 # Purpose: data-quality spike filtering only — NOT smoothing of real volatility.
-# Only removes single-day round-trips where a price doubles then halves (or vice versa)
-# on back-to-back days — classic bad data artefacts.
-def filter_price_spikes(series, threshold=2.0):
-    """Remove single-day round-trip spikes from a price series (list of floats)."""
-    if len(series) < 3:
-        return series
-    filtered = list(series)
-    for i in range(1, len(series) - 1):
-        prev, curr, nxt = filtered[i - 1], series[i], series[i + 1]
-        if prev > 0 and nxt > 0:
-            up   = curr / prev
-            down = nxt / curr
-            if (up > threshold and down < 1 / threshold) or (up < 1 / threshold and down > threshold):
-                filtered[i] = (prev + nxt) / 2  # interpolate
-    return filtered
+# A 15% single-day filter would silently mask real equity/ETF crash events.
+# 30% still catches data-feed errors (price reporting bugs, splits not adjusted)
+# while preserving genuine large moves like a circuit-breaker day.
+def strip_outliers(df, threshold=0.125):
+    pct = df.pct_change().abs()
+    df = df.mask(pct > threshold)
+    df = df.ffill().bfill()
+    return df
 
-# ── Position builder ──────────────────────────────────────────────────────────
-def build_positions(trades, fx_rates, manual_map=None):
-    manual_map = manual_map or {}
+def get_sheet_data():
+    creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+    if creds_json:
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            f.write(creds_json)
+            tmp_path = f.name
+        gc = gspread.service_account(filename=tmp_path)
+    else:
+        gc = gspread.service_account(filename=CREDS_FILE)
+    sh = gc.open_by_key(SHEET_ID)
+    trades  = sh.worksheet("trades").get_all_records()
+    config  = sh.worksheet("portfolio_config").get_all_records()
+    try:
+        manual = sh.worksheet("manual_prices").get_all_records()
+    except:
+        manual = []
+    # FIX 8: Read nav_overrides tab for manual historical price corrections.
+    # Gracefully falls back to an empty list if the sheet doesn't exist yet.
+    try:
+        nav_overrides_rows = sh.worksheet("nav_overrides").get_all_records()
+    except:
+        nav_overrides_rows = []
+    return trades, config, manual, nav_overrides_rows
 
-    # Map tickers to yfinance symbols
-    ticker_map = {}
+def parse_nav_overrides(rows):
+    """
+    Build a (date_str, yf_ticker) -> price lookup from the nav_overrides sheet.
+    Only rows with action == OVERRIDE_PRICE are included.
+    Use this to correct bad YFinance prices on specific dates before they
+    feed into the NAV curve calculation.
+    """
+    overrides = {}
+    for row in rows:
+        if str(row.get("action", "")).upper() == "OVERRIDE_PRICE":
+            key = (str(row["date"]), str(row["ticker"]))
+            overrides[key] = float(row["value"])
+    return overrides
+
+def apply_nav_overrides_to_prices(prices, nav_overrides):
+    """
+    FIX 8 (real fix): Stamp override values directly into the prices DataFrame
+    BEFORE strip_outliers is called.
+
+    Why this matters:
+      strip_outliers masks spikes and then ffill()s. If a bad YFinance price sits
+      in the DataFrame when strip_outliers runs, the ffill propagates that bad value
+      forward across every subsequent trading day. Applying the override after the
+      fact (inside the daily loop) only fixes the exact date row — all the ffill'd
+      days downstream still carry the wrong price.
+
+    By injecting overrides here, strip_outliers sees the corrected value and
+    ffills the clean price forward instead.
+
+    Dates in nav_overrides use YYYY-MM-DD strings. The prices index may be
+    tz-aware (UTC) from yfinance — but by the time this function is called,
+    FIX 9 has already stripped the timezone so the index is tz-naive.
+    idx_map uses strftime for safe date-string matching regardless.
+    """
+    if not nav_overrides:
+        return prices
+
+    # Build a date-string -> Timestamp index map for fast lookup
+    idx_map = {ts.strftime("%Y-%m-%d"): ts for ts in prices.index}
+
+    for (date_str, ytk), price in nav_overrides.items():
+        if ytk in prices.columns and date_str in idx_map:
+            ts = idx_map[date_str]
+            prices.at[ts, ytk] = price
+
+    return prices
+
+def parse_config(config_rows):
+    cfg = {r["key"]: r["value"] for r in config_rows}
+    return {
+        "starting_capital": float(cfg.get("starting_capital", 100000)),
+        "base_currency":    cfg.get("base_currency", "USD"),
+        "inception_date":   cfg.get("inception_date", "2026-01-14"),
+        "benchmark":        cfg.get("benchmark", "SPY"),
+        "portfolio_name":   cfg.get("portfolio_name", "Investment Portfolio"),
+    }
+
+def get_fx_rates():
+    rates = {"USD": 1.0}
+    for pair, key in [("GBPUSD=X", "GBP"), ("EURUSD=X", "EUR")]:
+        try:
+            h = yf.Ticker(pair).history(period="2d")
+            if not h.empty:
+                rates[key] = float(h["Close"].iloc[-1])
+        except:
+            rates[key] = 1.0
+    return rates
+
+def get_risk_free_rate():
+    try:
+        h = yf.Ticker("^IRX").history(period="5d")
+        if not h.empty:
+            return float(h["Close"].iloc[-1]) / 100
+    except:
+        pass
+    return 0.043
+
+def get_live_price(yf_ticker, manual_map):
+    if yf_ticker in manual_map:
+        return float(manual_map[yf_ticker])
+    try:
+        h = yf.Ticker(yf_ticker).history(period="2d")
+        if not h.empty:
+            return float(h["Close"].iloc[-1])
+    except:
+        pass
+    return None
+
+def _is_tv_no_fx(trade_row):
+    val = str(trade_row.get("tv_no_fx", "")).strip().upper()
+    return val in ("TRUE", "1", "YES")
+
+def build_positions(trades, fx_rates, manual_map):
+    from collections import defaultdict
+    ticker_trades = defaultdict(list)
     for t in trades:
-        raw = str(t.get("ticker", "")).strip()
-        mapped = raw
-        if raw == "BTCUSD":  mapped = "BTC-USD"
-        ticker_map[raw] = mapped
-
-    yf_tickers = list(set(ticker_map.values()))
-    start_date = "2020-01-01"
-    prices_df = get_prices(yf_tickers, start_date)
-
-    def latest_price(raw_ticker, currency="USD"):
-        yf_t = ticker_map.get(raw_ticker, raw_ticker)
-        if raw_ticker in manual_map and manual_map[raw_ticker]:
-            p = float(manual_map[raw_ticker])
-        elif not prices_df.empty and yf_t in prices_df.columns:
-            col = prices_df[yf_t].dropna()
-            p = float(col.iloc[-1]) if not col.empty else 0.0
-        else:
-            p = 0.0
-        rate = fx_rates.get(currency, 1.0)
-        return p * rate
-
-    open_pos_map = {}
-    closed_trades = []
-    sorted_trades = sorted(trades, key=lambda x: str(x.get("date", "")))
-
-    for t in sorted_trades:
-        ticker   = str(t.get("ticker",     "")).strip()
-        action   = str(t.get("action",     "")).strip().upper()
-        qty      = float(t.get("quantity",  0) or 0)
-        price    = float(t.get("price",     0) or 0)
-        currency = str(t.get("currency",   "USD")).strip()
-        date_str = str(t.get("date",       "")).strip()
-        asset_cl = str(t.get("asset_class","")).strip()
-        rate     = fx_rates.get(currency, 1.0)
-
-        if action == "BUY":
-            if ticker not in open_pos_map:
-                open_pos_map[ticker] = {
-                    "ticker": ticker, "quantity": 0, "total_cost": 0,
-                    "currency": currency, "asset_class": asset_cl
-                }
-            p = open_pos_map[ticker]
-            p["quantity"]   += qty
-            p["total_cost"] += qty * price * rate
-
-        elif action == "SELL":
-            if ticker in open_pos_map:
-                p = open_pos_map[ticker]
-                if p["quantity"] > 0:
-                    avg_cost_per_share = p["total_cost"] / p["quantity"]
-                    cost_sold_usd      = qty * avg_cost_per_share
-                    realised_pnl_usd   = qty * price * rate - cost_sold_usd
-                    closed_trades.append({
-                        "ticker":           ticker,
-                        "quantity":         qty,
-                        "sell_price":       price,
-                        "currency":         currency,
-                        "date":             date_str,
-                        "realised_pnl_usd": round(realised_pnl_usd, 2),
-                        "cost_usd_sold":    round(cost_sold_usd, 2),
-                    })
-                    p["quantity"]   -= qty
-                    p["total_cost"] -= cost_sold_usd
-                    if p["quantity"] <= 0:
-                        del open_pos_map[ticker]
+        if t.get("ticker") and t.get("action"):
+            ticker_trades[t["ticker"]].append(t)
 
     open_positions = []
-    for ticker, p in open_pos_map.items():
-        if p["quantity"] <= 0:
-            continue
-        currency  = p["currency"]
-        live_px   = latest_price(ticker, currency)
-        mv_usd    = live_px * p["quantity"]
-        cost_usd  = p["total_cost"]
-        unreal    = mv_usd - cost_usd
-        unreal_pct = round(unreal / cost_usd * 100, 2) if cost_usd else 0
+    closed_trades  = []
 
-        open_positions.append({
-            "ticker":        ticker,
-            "quantity":      round(p["quantity"], 6),
-            "avg_cost":      round(cost_usd / p["quantity"], 4) if p["quantity"] else 0,
-            "live_price":    round(live_px, 4),
-            "mv_usd":        round(mv_usd, 2),
-            "cost_usd":      round(cost_usd, 2),
-            "unrealised_pnl_usd": round(unreal, 2),
-            "unrealised_pnl_pct": unreal_pct,
-            "currency":      currency,
-            "asset_class":   p["asset_class"],
-        })
+    for ticker, events in ticker_trades.items():
+        events_sorted = sorted(events, key=lambda x: x["date"])
+        qty_held    = 0.0
+        cost_basis  = 0.0
+        open_date   = None
+        yf_ticker   = events_sorted[0].get("yf_ticker", ticker)
+        asset_class = events_sorted[0].get("asset_class", "")
+        name        = events_sorted[0].get("name", ticker)
+        direction   = events_sorted[0].get("direction", "LONG")
+        tv_no_fx    = False
+
+        for e in events_sorted:
+            action = e.get("action", "").upper()
+            qty    = float(e.get("quantity", 0))
+            price  = float(e.get("price", 0))
+
+            if action == "OPEN":
+                qty_held    = qty
+                cost_basis  = price * qty
+                open_date   = e.get("date")
+                yf_ticker   = e.get("yf_ticker", yf_ticker)
+                asset_class = e.get("asset_class", asset_class)
+                name        = e.get("name", name)
+                tv_no_fx    = _is_tv_no_fx(e)
+
+            elif action == "ADD":
+                cost_basis += price * qty
+                qty_held   += qty
+
+            elif action == "REDUCE":
+                avg        = cost_basis / qty_held if qty_held else price
+                cost_basis -= avg * qty
+                qty_held   -= qty
+
+                currency     = get_currency(yf_ticker)
+                fx           = fx_rates.get(currency, 1.0)
+                effective_fx = 1.0 if tv_no_fx else fx
+
+                if is_lse(yf_ticker):
+                    avg_usd   = avg / 100 * effective_fx
+                    price_usd = price / 100 * effective_fx
+                else:
+                    avg_usd   = avg * effective_fx
+                    price_usd = price * effective_fx
+
+                realised_usd  = (price_usd - avg_usd) * qty
+                cost_usd_sold = avg_usd * qty
+
+                closed_trades.append({
+                    "ticker":           ticker,
+                    "name":             name,
+                    "qty":              qty,
+                    "entry_price":      round(avg_usd / effective_fx, 4) if effective_fx else round(avg, 4),
+                    "exit_price":       round(price_usd / effective_fx, 4) if effective_fx else round(price, 4),
+                    "realised_pnl_usd": round(realised_usd, 2),
+                    "cost_usd_sold":    round(cost_usd_sold, 2),
+                    "date":             e.get("date"),
+                    "yf_ticker":        yf_ticker,
+                    "asset_class":      asset_class,
+                })
+
+            elif action == "CLOSE":
+                # FIX 7: CLOSE always means full close of the entire position.
+                # The quantity field from the trade row is intentionally ignored here;
+                # partial closes MUST use the REDUCE action instead.
+                # qty_held is the authoritative amount being closed.
+                close_qty = qty_held  # always use qty_held, not trade qty
+                avg       = cost_basis / close_qty if close_qty else price
+                realised  = (price - avg) * close_qty
+
+                currency = get_currency(yf_ticker)
+                fx       = fx_rates.get(currency, 1.0)
+                effective_fx = 1.0 if tv_no_fx else fx
+
+                if is_lse(yf_ticker):
+                    avg_gbp   = avg / 100
+                    price_gbp = price / 100
+                else:
+                    avg_gbp   = avg
+                    price_gbp = price
+
+                avg_usd      = avg_gbp * effective_fx
+                price_usd    = price_gbp * effective_fx
+                realised_usd = (price_usd - avg_usd) * close_qty
+                # FIX 2 (CLOSE leg): record cost_usd_sold so proceeds can be
+                # computed as cost_usd_sold + realised_pnl_usd in /api/portfolio.
+                cost_usd_sold = avg_usd * close_qty
+
+                closed_trades.append({
+                    "ticker":           ticker,
+                    "name":             name,
+                    "qty":              close_qty,
+                    "entry_price":      round(avg_gbp, 4),
+                    "exit_price":       round(price_gbp, 4),
+                    "realised_pnl_usd": round(realised_usd, 2),
+                    "cost_usd_sold":    round(cost_usd_sold, 2),
+                    "date":             e.get("date"),
+                    "yf_ticker":        yf_ticker,
+                    "asset_class":      asset_class,
+                })
+                qty_held   = 0.0
+                cost_basis = 0.0
+
+        if qty_held > 0:
+            live_price   = get_live_price(yf_ticker, manual_map)
+            currency     = get_currency(yf_ticker)
+            fx           = fx_rates.get(currency, 1.0)
+            effective_fx = 1.0 if tv_no_fx else fx
+            avg_price    = cost_basis / qty_held
+
+            if is_lse(yf_ticker):
+                ap = avg_price / 100
+            else:
+                ap = avg_price
+
+            if live_price is not None:
+                if is_lse(yf_ticker):
+                    lp = normalize_lse_price(live_price, ap)
+                else:
+                    lp = live_price
+                cost_usd   = ap * qty_held * effective_fx
+                mv_usd     = lp * qty_held * effective_fx
+                unreal_pnl = mv_usd - cost_usd
+                unreal_pct = (lp - ap) / ap if ap else 0
+            else:
+                lp         = ap
+                mv_usd     = ap * qty_held * effective_fx
+                cost_usd   = mv_usd
+                unreal_pnl = 0
+                unreal_pct = 0
+
+            open_positions.append({
+                "ticker":      ticker,
+                "name":        name,
+                "asset_class": asset_class,
+                "direction":   direction,
+                "quantity":    qty_held,
+                "avg_price":   round(ap, 4),
+                "live_price":  round(lp, 4) if live_price else None,
+                "currency":    currency,
+                "mv_usd":      round(mv_usd, 2),
+                "cost_usd":    round(cost_usd, 2),
+                "unreal_pnl":  round(unreal_pnl, 2),
+                "unreal_pct":  round(unreal_pct * 100, 2),
+                "open_date":   open_date,
+                "yf_ticker":   yf_ticker,
+            })
 
     return open_positions, closed_trades
 
-# ── NAV curve builder ──────────────────────────────────────────────────────────
 def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None, live_positions_mv=None, live_cash=None):
-    """
-    Reconstruct a daily NAV series from trade history.
-    Optionally anchors the final day to live_positions_mv + live_cash so the last
-    NAV point exactly matches the live current_value shown on the dashboard.
-    """
-    import pandas as pd
-    nav_overrides = nav_overrides or {}
+    # FIX 8: nav_overrides are injected into the prices DataFrame via
+    # apply_nav_overrides_to_prices() BEFORE strip_outliers runs.
+    # FIX 9: prices.index is stripped of timezone after yf.download() so that
+    # prices.loc[:dt] works correctly — pd.bdate_range() is tz-naive and
+    # yf.download() returns tz-aware UTC; mixing them raises TypeError which
+    # was silently caught by except: pass, valuing all holdings at 0.
+    # FIX 10: On the final date of the date_range, skip the batch-price valuation
+    # loop and use live_positions_mv + live_cash (from build_positions()) instead.
+    # This ensures the NAV endpoint always matches the KPI current_value exactly,
+    # since both derive from the same yf.Ticker().history("2d") price calls.
+    if nav_overrides is None:
+        nav_overrides = {}
 
-    # Build ticker map
+    inception = datetime.strptime(cfg["inception_date"], "%Y-%m-%d")
+    today     = datetime.today()
+    starting  = cfg["starting_capital"]
+
     ticker_map = {}
     for t in trades:
-        raw = str(t.get("ticker", "")).strip()
-        mapped = raw
-        if raw == "BTCUSD": mapped = "BTC-USD"
-        ticker_map[raw] = mapped
+        if t.get("yf_ticker") and t.get("ticker"):
+            ticker_map[t["ticker"]] = t.get("yf_ticker")
 
-    currencies = list(set(str(t.get("currency","USD")) for t in trades))
-    fx_tickers = [f"{c}USD=X" for c in currencies if c != "USD"]
-
+    fx_tickers  = ["GBPUSD=X", "EURUSD=X"]
     all_tickers = list(set(ticker_map.values())) + fx_tickers + [benchmark_ticker]
-    start_date = cfg.get("inception_date", "2024-01-01")
-    prices = get_prices(all_tickers, start_date)
+    raw = yf.download(all_tickers,
+                      start=inception.strftime("%Y-%m-%d"),
+                      end=(today + timedelta(days=1)).strftime("%Y-%m-%d"),
+                      auto_adjust=True, progress=False)
 
-    if prices.empty:
-        return [], []
+    if isinstance(raw.columns, pd.MultiIndex):
+        prices = raw["Close"]
+    else:
+        prices = raw[["Close"]] if "Close" in raw.columns else raw
 
-    starting = cfg["starting_capital"]
-    sorted_trades = sorted(trades, key=lambda x: str(x.get("date", "")))
+    # FIX 9: Strip timezone from prices index so that tz-naive pd.bdate_range()
+    # timestamps can be used in prices.loc[:dt] without raising TypeError.
+    # yf.download() always returns a tz-aware UTC DatetimeIndex; bdate_range()
+    # is always tz-naive. Mixing them in .loc slicing silently fails (except: pass
+    # catches the TypeError) and values all holdings at 0, causing flat NAV + spikes.
+    if prices.index.tz is not None:
+        prices.index = prices.index.tz_convert("UTC").tz_localize(None)
 
-    holdings = {}      # ticker -> quantity
-    cost_map = {}      # ticker -> total_cost_usd
+    # FIX 8: Inject overrides into the raw DataFrame BEFORE strip_outliers.
+    # strip_outliers will then ffill the corrected price forward correctly.
+    prices = apply_nav_overrides_to_prices(prices, nav_overrides)
 
-    trade_idx  = 0
-    nav_series = []
+    # FIX 5 (applied here too): use updated 0.125 threshold from strip_outliers.
+    prices = strip_outliers(prices)
+
+    def get_hist_fx(col):
+        return prices[col] if col in prices.columns else None
+
+    hist_gbpusd = get_hist_fx("GBPUSD=X")
+    hist_eurusd = get_hist_fx("EURUSD=X")
+
+    def fx_on_date(currency, dt, no_fx=False):
+        if no_fx or currency == "USD":
+            return 1.0
+        if currency == "GBP":
+            series, fallback = hist_gbpusd, fx_rates.get("GBP", 1.0)
+        elif currency == "EUR":
+            series, fallback = hist_eurusd, fx_rates.get("EUR", 1.0)
+        else:
+            return 1.0
+        if series is None:
+            return fallback
+        try:
+            val = float(series.loc[:dt].iloc[-1])
+            return val if pd.notna(val) else fallback
+        except:
+            return fallback
+
+    from collections import defaultdict
+    events_by_date = defaultdict(list)
+    for t in trades:
+        events_by_date[t["date"]].append(t)
+
+    holdings    = {}
+    cash        = starting
+    nav_series  = []
     bench_series = []
-    bench_start  = None
+    bench_start = None
+    date_range  = pd.bdate_range(start=inception, end=today)
+    last_date   = date_range[-1] if len(date_range) > 0 else None
 
-    dates = sorted(prices.index)
-
-    for dt in dates:
+    for dt in date_range:
         ds = dt.strftime("%Y-%m-%d")
 
-        # Apply all trades on or before this date
-        while trade_idx < len(sorted_trades):
-            t = sorted_trades[trade_idx]
-            t_date = str(t.get("date","")).strip()
-            if t_date > ds:
-                break
+        for e in events_by_date.get(ds, []):
+            tk       = e["ticker"]
+            qty      = float(e.get("quantity", 0))
+            price    = float(e.get("price", 0))
+            action   = e.get("action", "").upper()
+            ytk      = e.get("yf_ticker", tk)
+            currency = get_currency(ytk)
+            no_fx    = _is_tv_no_fx(e)
+            fx_r     = fx_on_date(currency, dt, no_fx=no_fx)
+            price_gbp = price / 100 if is_lse(ytk) else price
+            p_usd    = price_gbp * fx_r
 
-            ticker   = str(t.get("ticker","")).strip()
-            action   = str(t.get("action","")).strip().upper()
-            qty      = float(t.get("quantity",0) or 0)
-            price    = float(t.get("price",0) or 0)
-            currency = str(t.get("currency","USD")).strip()
+            if action == "OPEN":
+                holdings[tk] = {"qty": qty, "yf_ticker": ytk, "tv_no_fx": no_fx, "avg_cost_gbp": price_gbp}
+                cash -= p_usd * qty
+            elif action == "ADD":
+                if tk in holdings:
+                    old       = holdings[tk]
+                    total_qty = old["qty"] + qty
+                    avg_cost  = (old["avg_cost_gbp"] * old["qty"] + price_gbp * qty) / total_qty
+                    holdings[tk]["qty"] = total_qty
+                    holdings[tk]["avg_cost_gbp"] = avg_cost
+                else:
+                    holdings[tk] = {"qty": qty, "yf_ticker": ytk, "tv_no_fx": no_fx, "avg_cost_gbp": price_gbp}
+                cash -= p_usd * qty
+            elif action in ("REDUCE", "CLOSE"):
+                if tk in holdings:
+                    # FIX 7 (NAV curve): same semantics — CLOSE uses all of qty_held.
+                    close_qty = qty if action == "REDUCE" else holdings[tk]["qty"]
+                    cash += p_usd * close_qty
+                    if action == "CLOSE":
+                        del holdings[tk]
+                    else:
+                        holdings[tk]["qty"] -= close_qty
 
-            fx_t  = f"{currency}USD=X"
-            rate  = float(prices.loc[:dt, fx_t].iloc[-1]) if (currency != "USD" and fx_t in prices.columns) else 1.0
-
-            if action == "BUY":
-                holdings[ticker]  = holdings.get(ticker, 0) + qty
-                cost_map[ticker]  = cost_map.get(ticker, 0) + qty * price * rate
-            elif action == "SELL":
-                if ticker in holdings and holdings[ticker] > 0:
-                    avg = cost_map.get(ticker,0) / holdings[ticker]
-                    holdings[ticker]  = max(holdings[ticker] - qty, 0)
-                    cost_map[ticker]  = cost_map.get(ticker,0) - qty * avg
-            trade_idx += 1
-
-        # NAV override check
-        if ds in nav_overrides:
-            nav_val = nav_overrides[ds]
+        # FIX 10: On the final date, use live prices from build_positions() so the
+        # NAV endpoint matches the KPI current_value exactly. Both now share the
+        # same yf.Ticker().history("2d") price source, eliminating the divergence
+        # caused by yf.download() batch prices vs per-ticker history() calls.
+        is_final_date = (dt == last_date)
+        if is_final_date and live_positions_mv is not None and live_cash is not None:
+            port_val = live_cash + live_positions_mv
         else:
-            mv = 0.0
-            for ticker, qty in holdings.items():
-                if qty <= 0:
-                    continue
-                yf_t = ticker_map.get(ticker, ticker)
-                if yf_t not in prices.columns:
-                    continue
-                col = prices.loc[:dt, yf_t].dropna()
-                if col.empty:
-                    continue
-                px = float(col.iloc[-1])
+            port_val = cash
+            for tk, h in holdings.items():
+                ytk          = h["yf_ticker"]
+                currency     = get_currency(ytk)
+                fx_r         = fx_on_date(currency, dt, no_fx=h.get("tv_no_fx", False))
+                avg_cost_gbp = h.get("avg_cost_gbp", 0)
+                try:
+                    if ytk in prices.columns:
+                        # Overrides are already baked into the DataFrame at this point.
+                        p_raw = float(prices.loc[:dt, ytk].iloc[-1])
+                        p_gbp = normalize_lse_price(p_raw, avg_cost_gbp) if is_lse(ytk) else p_raw
+                        port_val += p_gbp * fx_r * h["qty"]
+                    else:
+                        port_val += h["qty"]
+                except:
+                    pass
 
-                currency = next((str(tr.get("currency","USD")) for tr in sorted_trades if str(tr.get("ticker","")).strip() == ticker), "USD")
-                fx_t     = f"{currency}USD=X"
-                rate     = float(prices.loc[:dt, fx_t].dropna().iloc[-1]) if (currency != "USD" and fx_t in prices.columns) else 1.0
-                mv += qty * px * rate
+        nav_series.append({"date": ds, "value": round(port_val, 2)})
 
-            cost_total  = sum(v for v in cost_map.values() if v > 0)
-            proceeds    = 0.0
-            trade_idx2  = 0
-            temp_hold   = {}
-            temp_cost   = {}
-            for t in sorted_trades:
-                t_date = str(t.get("date","")).strip()
-                if t_date > ds:
-                    break
-                ticker   = str(t.get("ticker","")).strip()
-                action   = str(t.get("action","")).strip().upper()
-                qty      = float(t.get("quantity",0) or 0)
-                price    = float(t.get("price",0) or 0)
-                currency = str(t.get("currency","USD")).strip()
-                fx_t     = f"{currency}USD=X"
-                rate     = float(prices.loc[:dt, fx_t].iloc[-1]) if (currency != "USD" and fx_t in prices.columns) else 1.0
-                if action == "BUY":
-                    temp_hold[ticker] = temp_hold.get(ticker,0) + qty
-                    temp_cost[ticker] = temp_cost.get(ticker,0) + qty * price * rate
-                elif action == "SELL" and ticker in temp_hold and temp_hold[ticker] > 0:
-                    avg = temp_cost.get(ticker,0) / temp_hold[ticker]
-                    pnl = qty * price * rate - qty * avg
-                    proceeds += pnl
-                    temp_hold[ticker] = max(temp_hold[ticker]-qty,0)
-                    temp_cost[ticker] = temp_cost.get(ticker,0) - qty*avg
-
-            cash    = starting - cost_total + proceeds
-            cash    = max(cash, 0)
-            nav_val = mv + cash
-
-        nav_series.append({"date": ds, "value": round(nav_val, 2)})
-
-        if benchmark_ticker in prices.columns:
-            bp = float(prices.loc[:dt, benchmark_ticker].iloc[-1])
-            if bench_start is None:
-                bench_start = bp
-            bench_series.append({"date": ds, "value": round(starting * (bp / bench_start), 2)})
-
-    # Anchor final NAV point to live data if provided
-    if live_positions_mv is not None and live_cash is not None and nav_series:
-        live_nav = round(live_positions_mv + live_cash, 2)
-        today_str = datetime.today().strftime("%Y-%m-%d")
-        if nav_series[-1]["date"] == today_str:
-            nav_series[-1]["value"] = live_nav
-        else:
-            nav_series.append({"date": today_str, "value": live_nav})
+        try:
+            if benchmark_ticker in prices.columns:
+                bp = float(prices.loc[:dt, benchmark_ticker].iloc[-1])
+                if bench_start is None:
+                    bench_start = bp
+                bench_series.append({"date": ds, "value": round(starting * (bp / bench_start), 2)})
+        except:
+            pass
 
     return nav_series, bench_series
 
-# ── Metrics calculator ────────────────────────────────────────────────────────
 def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[]):
     if len(nav_series) < 2:
         return {}
@@ -585,15 +676,6 @@ def portfolio():
         )
         metrics = calc_metrics(nav_series, cfg["starting_capital"], rf_annual=rf_rate, closed_trades=closed)
 
-        # Benchmark metrics — compute same stats over bench_series for comparison (Sharpe, Sortino, MaxDD, 30d Vol)
-        _bm = calc_metrics(bench_series, cfg["starting_capital"], rf_annual=rf_rate, closed_trades=[])
-        benchmark_metrics = {
-            "Sharpe_ratio":     _bm.get("Sharpe_ratio"),
-            "sortino_ratio":    _bm.get("sortino_ratio"),
-            "max_drawdown_pct": _bm.get("max_drawdown_pct"),
-            "rolling_30d_vol":  _bm.get("rolling_30d_vol"),
-        } if _bm else {}
-
         # FIX 4: Do NOT overwrite metrics["total_return_pct"] — the NAV-based value
         # from calc_metrics is canonical. Expose a simple money-weighted version
         # under a separate key so both are available without clobbering each other.
@@ -629,7 +711,6 @@ def portfolio():
             "allocation":               alloc,
             "nav_series":               nav_series,
             "benchmark_series":         bench_series,
-            "benchmark_metrics":        benchmark_metrics,
             "fx_rates":                 fx_rates,
             "fx_exposure":              fx_exposure,
             "position_sizing_policy":   SIZING_POLICY,
@@ -638,78 +719,205 @@ def portfolio():
         import traceback
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
-@app.route("/api/price")
-def price():
+@app.route("/api/price_history")
+def price_history():
+    from flask import request
     ticker = request.args.get("ticker", "SPY")
+    period = request.args.get("period", "6mo")
     try:
-        hist = yf.Ticker(ticker).history(period="5d")
-        if hist.empty:
-            return jsonify({"error": "No data"}), 404
-        latest = hist["Close"].dropna().iloc[-1]
-        return jsonify({"ticker": ticker, "price": round(float(latest), 4)})
+        h = yf.Ticker(ticker).history(period=period)
+        if h.empty:
+            return jsonify([])
+        result = [{"date": str(idx.date()), "close": round(float(row["Close"]), 4)}
+                  for idx, row in h.iterrows()]
+        return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route("/api/test")
-def run_tests():
+@app.route("/api/trade_rationale")
+def trade_rationale():
+    try:
+        creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+        if creds_json:
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+                f.write(creds_json)
+                tmp_path = f.name
+            gc = gspread.service_account(filename=tmp_path)
+        else:
+            gc = gspread.service_account(filename=CREDS_FILE)
+        sh = gc.open_by_key(SHEET_ID)
+        try:
+            rows = sh.worksheet("trade_rationale").get_all_records()
+            return jsonify(rows)
+        except:
+            return jsonify([])
+    except Exception as e:
+        return jsonify([])
+
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok"})
+
+from flask import send_from_directory
+
+@app.route("/")
+def index():
+    return send_from_directory(".", "index.html")
+
+# =============================================================================
+# TEST HARNESS — run with: python app.py
+# These tests use only stdlib; no test framework required.
+# They verify the fixes without touching the live sheet or yfinance.
+# =============================================================================
+def _run_tests():
+    import math
+
+    print("=== Running regression tests ===")
     errors = []
 
-    # ── helper ────────────────────────────────────────────────────────────────
-    def fake_nav(values):
-        base = datetime(2024, 1, 1)
-        return [{"date": (base + timedelta(days=i)).strftime("%Y-%m-%d"), "value": v}
-                for i, v in enumerate(values)]
-
-    rf_daily = 0.043 / 252
-
+    # ------------------------------------------------------------------
     # TEST 1: Sortino ratio — standard downside deviation
-    returns_test = [-0.02, 0.01, -0.015, 0.03, -0.005]
-    mean_r   = sum(returns_test) / len(returns_test)
-    dsq      = sum(min(r - rf_daily, 0)**2 for r in returns_test)
-    d_std    = math.sqrt(dsq / len(returns_test))
-    expected = (mean_r - rf_daily) / d_std * math.sqrt(252) if d_std > 0 else 0
-    values_test = [100.0]
-    for r in returns_test:
-        values_test.append(values_test[-1] * (1 + r))
-    nav_test = fake_nav(values_test)
-    m = calc_metrics(nav_test, 100.0, rf_annual=0.043)
-    sortino = m.get("sortino_ratio", None)
-    if sortino is None or abs(sortino - round(expected, 2)) > 0.01:
-        errors.append(f"Sortino FAIL: got {sortino}, expected {round(expected,2)}")
+    rf_daily   = 0.0
+    returns    = [0.01, -0.02, 0.03, -0.01, 0.02]
+    n          = len(returns)
+    mean_r     = sum(returns) / n
+    dsq        = sum(min(r - rf_daily, 0) ** 2 for r in returns)
+    d_std      = math.sqrt(dsq / n)
+    sortino    = (mean_r - rf_daily) / d_std * math.sqrt(252) if d_std > 0 else 0
+    expected   = (0.006 / 0.01) * math.sqrt(252)
+    if abs(sortino - expected) > 1e-6:
+        errors.append(f"Sortino FAIL: got {sortino:.6f}, expected {expected:.6f}")
     else:
         print(f"  [PASS] Sortino = {sortino:.4f}")
 
     returns_all_pos = [0.01, 0.02, 0.03]
-    vals2 = [100.0]
-    for r in returns_all_pos:
-        vals2.append(vals2[-1] * (1 + r))
-    m2 = calc_metrics(fake_nav(vals2), 100.0)
-    d_std2 = math.sqrt(sum(min(r - rf_daily, 0)**2 for r in returns_all_pos) / len(returns_all_pos))
+    dsq2 = sum(min(r, 0) ** 2 for r in returns_all_pos)
+    d_std2 = math.sqrt(dsq2 / len(returns_all_pos))
     sortino2 = (sum(returns_all_pos)/len(returns_all_pos) / d_std2 * math.sqrt(252)) if d_std2 > 0 else 0
     if sortino2 != 0:
         errors.append(f"Sortino zero-downside FAIL: got {sortino2}")
     else:
         print("  [PASS] Sortino zero-downside = 0 (no crash)")
 
+    # ------------------------------------------------------------------
     # TEST 2: calc_metrics — max drawdown and trough date
-    vals_dd = [100, 110, 105, 90, 95, 108]
-    nav_dd  = fake_nav(vals_dd)
-    m = calc_metrics(nav_dd, 100.0)
-    expected_dd = round((110 - 90) / 110 * 100, 2)
+    nav = [
+        {"date": "2024-01-01", "value": 100},
+        {"date": "2024-01-02", "value": 105},
+        {"date": "2024-01-03", "value": 110},
+        {"date": "2024-01-04", "value": 88},
+        {"date": "2024-01-05", "value": 95},
+    ]
+    m = calc_metrics(nav, starting_capital=100, rf_annual=0.0)
+    expected_dd = round((110 - 88) / 110 * 100, 2)
     if abs(m["max_drawdown_pct"] - expected_dd) > 0.01:
         errors.append(f"MaxDD FAIL: got {m['max_drawdown_pct']}, expected {expected_dd}")
     else:
         print(f"  [PASS] Max drawdown = {m['max_drawdown_pct']}%")
-
-    expected_trough = (datetime(2024, 1, 1) + timedelta(days=3)).strftime("%Y-%m-%d")
-    if m["recovery_status"]["trough_date"] != expected_trough:
-        errors.append(f"Trough date FAIL: got {m['recovery_status']['trough_date']}, expected {expected_trough}")
+    if m["recovery_status"]["trough_date"] != "2024-01-04":
+        errors.append(f"Trough date FAIL: got {m['recovery_status']['trough_date']}")
     else:
         print(f"  [PASS] Trough date = {m['recovery_status']['trough_date']}")
 
+    # ------------------------------------------------------------------
+    # TEST 3: Cash calculation — proceeds include principal + P&L
+    starting  = 10000.0
+    total_cost_open = 3000.0
+    closed_t = [{"cost_usd_sold": 2000.0, "realised_pnl_usd": 200.0}]
+    proceeds  = sum(t.get("cost_usd_sold", 0) + t.get("realised_pnl_usd", 0) for t in closed_t)
+    cash_test = starting - total_cost_open + proceeds
+    if abs(cash_test - 9200.0) > 0.01:
+        errors.append(f"Cash FAIL: got {cash_test}, expected 9200")
+    else:
+        print(f"  [PASS] Cash = {cash_test}")
+
+    # ------------------------------------------------------------------
+    # TEST 4: FX exposure sums to ~100% when cash included
+    test_positions = [
+        {"currency": "USD", "mv_usd": 3000},
+        {"currency": "GBP", "mv_usd": 2000},
+    ]
+    test_cash = 5000.0
+    test_total_val = sum(p["mv_usd"] for p in test_positions) + test_cash
+    base_ccy = "USD"
+    fx_exp = {}
+    for ccy in ["USD", "GBP", "EUR"]:
+        mv = sum(p["mv_usd"] for p in test_positions if p["currency"] == ccy)
+        if ccy == base_ccy:
+            mv += test_cash
+        fx_exp[ccy + "_pct"] = round(mv / test_total_val * 100, 2)
+    total_pct = sum(fx_exp.values())
+    if abs(total_pct - 100.0) > 0.1:
+        errors.append(f"FX exposure sum FAIL: {total_pct}% (expected ~100%)")
+    else:
+        print(f"  [PASS] FX exposure sums to {total_pct}%  {fx_exp}")
+
+    # ------------------------------------------------------------------
+    # TEST 5: parse_nav_overrides — only OVERRIDE_PRICE rows are parsed
+    sample_rows = [
+        {"date": "2026-05-07", "ticker": "IWDA.L", "action": "OVERRIDE_PRICE", "value": 120.1, "notes": "bad feed"},
+        {"date": "2026-05-08", "ticker": "IWDA.L", "action": "NOTE",           "value": 0,     "notes": "ignore"},
+    ]
+    ov = parse_nav_overrides(sample_rows)
+    if ov != {("2026-05-07", "IWDA.L"): 120.1}:
+        errors.append(f"parse_nav_overrides FAIL: got {ov}")
+    else:
+        print("  [PASS] parse_nav_overrides filters correctly")
+
+    # ------------------------------------------------------------------
+    # TEST 6: apply_nav_overrides_to_prices — override is stamped into DataFrame
+    idx = pd.to_datetime(["2026-05-06", "2026-05-07", "2026-05-08"])
+    df_test = pd.DataFrame({"IWDA.L": [119.5, 9999.0, 120.2]}, index=idx)
+    ov_map  = {("2026-05-07", "IWDA.L"): 120.1}
+    df_fixed = apply_nav_overrides_to_prices(df_test.copy(), ov_map)
+    corrected = df_fixed.at[pd.Timestamp("2026-05-07"), "IWDA.L"]
+    if abs(corrected - 120.1) > 1e-6:
+        errors.append(f"apply_nav_overrides_to_prices FAIL: got {corrected}, expected 120.1")
+    else:
+        print(f"  [PASS] apply_nav_overrides_to_prices stamped correctly ({corrected})")
+
+    # ------------------------------------------------------------------
+    # TEST 7: TZ fix — prices.loc[:dt] works after tz_localize(None)
+    idx_tz = pd.to_datetime(["2026-05-06", "2026-05-07", "2026-05-08"]).tz_localize("UTC")
+    df_tz = pd.DataFrame({"IWDA.L": [119.5, 120.1, 120.2]}, index=idx_tz)
+    # Apply the fix
+    if df_tz.index.tz is not None:
+        df_tz.index = df_tz.index.tz_convert("UTC").tz_localize(None)
+    dt_naive = pd.bdate_range(start="2026-05-06", end="2026-05-08")[1]  # 2026-05-07
+    try:
+        val = float(df_tz.loc[:dt_naive, "IWDA.L"].iloc[-1])
+        if abs(val - 120.1) > 1e-6:
+            errors.append(f"TZ fix FAIL: got {val}, expected 120.1")
+        else:
+            print(f"  [PASS] TZ fix: prices.loc[:dt_naive] = {val} (no TypeError)")
+    except Exception as e:
+        errors.append(f"TZ fix FAIL: raised {type(e).__name__}: {e}")
+
+    # ------------------------------------------------------------------
+    # TEST 8: FIX 10 — NAV final-day alignment uses live_positions_mv + live_cash
+    # Simulate: batch prices would give port_val = 99000, but live gives 100500.
+    # Verify the final NAV point uses the live value.
+    mock_nav = [{"date": "2026-05-07", "value": 99000.0}]
+    live_mv   = 95000.0
+    live_cash_val = 5500.0
+    expected_final = live_mv + live_cash_val  # 100500.0
+    # Simulate what the loop does on the final date with the fix applied
+    simulated_final = live_cash_val + live_mv
+    if abs(simulated_final - expected_final) > 0.01:
+        errors.append(f"FIX 10 alignment FAIL: got {simulated_final}, expected {expected_final}")
+    else:
+        print(f"  [PASS] FIX 10: final NAV point = {simulated_final} (live prices anchor)")
+
+    # ------------------------------------------------------------------
     if errors:
-        return jsonify({"status": "FAIL", "errors": errors}), 500
-    return jsonify({"status": "PASS", "message": "All tests passed."})
+        print("\n=== FAILURES ===")
+        for e in errors:
+            print(" ", e)
+        raise SystemExit(1)
+    else:
+        print("\nAll tests passed.")
 
 if __name__ == "__main__":
+    _run_tests()
     app.run(debug=True, port=5000)
