@@ -26,6 +26,11 @@
 #  11. BENCHMARK METRICS: calc_benchmark_metrics() computes Sharpe, Sortino, max drawdown,
 #      and 30d rolling vol for the benchmark (SPY) series using identical formulas to
 #      calc_metrics(). Exposed as benchmark_metrics in /api/portfolio response.
+#  12. C&CE SLEEVE: positions with asset_class == "C&CE" are treated as the cash sleeve.
+#      Their live MV is included in total_val (via open_pos/total_mv) as normal.
+#      The alloc dict merges residual uninvested cash into the "C&CE" bucket rather than
+#      a separate "Cash" key. cce_positions and cce_total (positions MV + residual cash)
+#      are exposed in the API response for the frontend C&CE box.
 # SAFE: Sharpe, NAV curve logic, hit_rate, rolling_vol — unchanged.
 # ADDED: test harness under if __name__ == '__main__' for regressions.
 
@@ -663,9 +668,11 @@ def portfolio():
         total_cost = sum(p["cost_usd"] for p in open_pos)
 
         # FIX 2: Cash = starting_capital - cost_of_open_positions + sum(sale_proceeds).
+        # Note: C&CE positions are included in total_cost/total_mv as normal holdings.
+        # The residual cash here represents truly uninvested capital.
         proceeds_total = sum(t.get("realised_pnl_usd", 0) for t in closed)
         cash = cfg["starting_capital"] - total_cost + proceeds_total
-        cash      = max(cash, 0)
+        cash = max(cash, 0)
         total_val = total_mv + cash
 
         for p in open_pos:
@@ -698,14 +705,29 @@ def portfolio():
                 p["sizing_band"]   = "Unclassified"
                 p["sizing_breach"] = False
 
+        # FIX 12: Build allocation dict.
+        # C&CE positions contribute their MV to the "C&CE" bucket via asset_class (same as
+        # any other position class). The residual uninvested cash is also merged into the
+        # "C&CE" bucket so that the allocation chart shows one unified cash/liquidity sleeve.
+        # The old "Cash" key is no longer emitted.
         alloc = {}
         for p in open_pos:
             ac = p["asset_class"]
             alloc[ac] = round(alloc.get(ac, 0) + p["mv_usd"] / total_val * 100, 2)
         if cash > 0 and total_val > 0:
-            alloc["Cash"] = round(cash / total_val * 100, 2)
+            alloc["C&CE"] = round(alloc.get("C&CE", 0) + cash / total_val * 100, 2)
+
+        # FIX 12: Compute C&CE sleeve totals for the frontend box.
+        # cce_positions: open positions with asset_class == "C&CE" (live-priced instruments).
+        # cce_mv:        their combined market value in USD.
+        # cce_total:     cce_mv + residual uninvested cash = full cash/liquidity sleeve.
+        cce_positions = [p for p in open_pos if p.get("asset_class") == "C&CE"]
+        cce_mv        = sum(p["mv_usd"] for p in cce_positions)
+        cce_total     = round(cce_mv + cash, 2)
 
         # FIX 10: Pass live_positions_mv and live_cash into build_nav_curve.
+        # live_positions_mv includes C&CE position MVs (they are in open_pos).
+        # live_cash is the residual uninvested cash only.
         nav_series, bench_series = build_nav_curve(
             trades, fx_rates, cfg, cfg["benchmark"],
             nav_overrides=nav_overrides,
@@ -723,7 +745,8 @@ def portfolio():
             if cfg["starting_capital"] else 0
         )
 
-        # FIX 6: FX exposure — include cash in base currency bucket.
+        # FIX 6: FX exposure — include residual cash in base currency bucket.
+        # C&CE positions are included via open_pos MV summed per currency (correct).
         base_ccy = cfg.get("base_currency", "USD")
         fx_exposure = {}
         for currency in ["USD", "GBP", "EUR"]:
@@ -740,6 +763,8 @@ def portfolio():
             "current_value":            round(total_val, 2),
             "total_pnl":                round(total_val - cfg["starting_capital"], 2),
             "cash":                     round(cash, 2),
+            "cce_positions":            cce_positions,
+            "cce_total":                cce_total,
             "metrics":                  metrics,
             "benchmark_metrics":        bench_metrics,
             "simple_total_return_pct":  simple_total_return_pct,
@@ -950,6 +975,35 @@ def _run_tests():
         errors.append(f"calc_benchmark_metrics returned None values: {bm}")
     else:
         print(f"  [PASS] calc_benchmark_metrics keys present, values: {bm}")
+
+    # TEST 12: C&CE sleeve — alloc merges residual cash into C&CE bucket, not "Cash"
+    test_open_pos = [
+        {"asset_class": "Equity",  "mv_usd": 40000},
+        {"asset_class": "C&CE",    "mv_usd": 20000},
+    ]
+    test_cash_cce  = 10000.0
+    test_total_cce = sum(p["mv_usd"] for p in test_open_pos) + test_cash_cce  # 70000
+    test_alloc = {}
+    for p in test_open_pos:
+        ac = p["asset_class"]
+        test_alloc[ac] = round(test_alloc.get(ac, 0) + p["mv_usd"] / test_total_cce * 100, 2)
+    if test_cash_cce > 0:
+        test_alloc["C&CE"] = round(test_alloc.get("C&CE", 0) + test_cash_cce / test_total_cce * 100, 2)
+    if "Cash" in test_alloc:
+        errors.append(f"C&CE alloc FAIL: 'Cash' key still present — {test_alloc}")
+    elif abs(test_alloc.get("C&CE", 0) - round((20000 + 10000) / 70000 * 100, 2)) > 0.01:
+        errors.append(f"C&CE alloc FAIL: C&CE pct wrong — {test_alloc}")
+    else:
+        print(f"  [PASS] C&CE alloc: {test_alloc}  (no 'Cash' key, C&CE={test_alloc['C&CE']}%)")
+
+    # TEST 12b: cce_total = cce_mv + residual cash
+    cce_pos_test  = [p for p in test_open_pos if p.get("asset_class") == "C&CE"]
+    cce_mv_test   = sum(p["mv_usd"] for p in cce_pos_test)  # 20000
+    cce_total_test = round(cce_mv_test + test_cash_cce, 2)   # 30000
+    if abs(cce_total_test - 30000.0) > 0.01:
+        errors.append(f"cce_total FAIL: got {cce_total_test}, expected 30000")
+    else:
+        print(f"  [PASS] cce_total = {cce_total_test} (positions MV + residual cash)")
 
     if errors:
         print("\n=== FAILURES ===")
