@@ -377,6 +377,7 @@ const getClosedTrades   = () => window._portfolioData?.closed_trades || [];
 const getAllocation      = () => window._portfolioData?.allocation || {};
 const getFxExposure     = () => window._portfolioData?.fx_exposure || {};
 const getSizingPolicy   = () => window._portfolioData?.position_sizing_policy || {};
+const getBenchmarkMetrics = () => window._portfolioData?.benchmark_metrics || {};
 
 // ════════════════════════════════════════════════════════════════════════════
 // SECTION 4 — DERIVED METRICS
@@ -489,7 +490,20 @@ function PolicyStatusCard(title, status, statusVariant, description, actionLabel
   const aHTML = actionLabel ? `<div class="policy-card-action"><a href="${actionHref}">${actionLabel}<\/a><\/div>` : '';
   return `<div class="policy-card"><div class="policy-card-header"><span class="policy-card-title">${title}<\/span>${Badge(status,statusVariant)}<\/div><div class="policy-card-desc">${description}<\/div>${aHTML}<\/div>`;
 }
-
+function BenchmarkKpiCard(label, portVal, benchVal, higherIsBetter = true) {
+  const pNum = portVal != null ? Number(portVal) : null;
+  const bNum = benchVal != null ? Number(benchVal) : null;
+  const portFmt = pNum != null ? pNum.toFixed(2) : '—';
+  const benchFmt = bNum != null ? bNum.toFixed(2) : '—';
+  let deltaHTML = '';
+  if (pNum != null && bNum != null) {
+    const diff = pNum - bNum;
+    const beating = higherIsBetter ? diff >= 0 : diff <= 0;
+    const sign = diff >= 0 ? '+' : '';
+    deltaHTML = `<div class="kpi-delta ${beating ? 'up' : 'down'}">${sign}${diff.toFixed(2)} vs SPY</div>`;
+  }
+  return `<div class="kpi-card"><div class="kpi-label">${label}</div><div class="kpi-value">${portFmt}</div><div class="kpi-delta neutral" style="font-size:.7rem">SPY: ${benchFmt}</div>${deltaHTML}</div>`;
+}
 function EmptyState(icon, title, message) {
   return `<div class="empty-state"><div class="empty-icon">${icon}<\/div><strong>${title}<\/strong><p>${message}<\/p><\/div>`;
 }
@@ -770,38 +784,32 @@ function renderDashboard(root) {
       )}
     </div>
 
-    <!-- KPI Row 2: Risk & Performance -->
+    <!-- KPI Row 2: Portfolio vs Benchmark -->
     <div class="kpi-grid section-gap" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr));margin-bottom:2rem">
-      ${MetricCard(
+      ${BenchmarkKpiCard(
         'Sharpe Ratio',
-        metrics.Sharpe_ratio != null ? Number(metrics.Sharpe_ratio).toFixed(2) : '—',
-        'Risk-adjusted return',
-        null,
-        'default',
-        '(Mean excess return / Std dev) × √252'
+        getMetrics().Sharpe_ratio,
+        getBenchmarkMetrics().benchmark_sharpe,
+        true
       )}
-      ${MetricCard(
+      ${BenchmarkKpiCard(
         'Sortino Ratio',
-        metrics.sortino_ratio != null ? Number(metrics.sortino_ratio).toFixed(2) : '—',
-        'Downside risk-adjusted',
-        null,
-        'default',
-        '(Mean excess return / Downside std) × √252'
+        getMetrics().sortino_ratio,
+        getBenchmarkMetrics().benchmark_sortino,
+        true
       )}
-      ${MetricCard(
-        'Max Drawdown',
-        metrics.max_drawdown_pct != null ? '-' + Number(metrics.max_drawdown_pct).toFixed(2) + '%' : '—',
-        'Peak to trough',
-        null,
-        metrics.max_drawdown_pct > 10 ? 'danger' : 'default'
+      ${BenchmarkKpiCard(
+        'Max Drawdown %',
+        getMetrics().max_drawdown_pct,
+        getBenchmarkMetrics().benchmark_max_drawdown_pct,
+        false
       )}
-      <div class="kpi-card">
-        <div class="kpi-label">30d Volatility</div>
-        <div class="kpi-value" style="font-size:1.1rem;margin-top:.1rem">
-          ${TrafficLight(Number(metrics.rolling_30d_vol || 0), 10, 15, '%')}
-        </div>
-        <div class="kpi-delta neutral">Annualised, rolling</div>
-      </div>
+      ${BenchmarkKpiCard(
+        '30d Vol %',
+        getMetrics().rolling_30d_vol,
+        getBenchmarkMetrics().benchmark_rolling_30d_vol,
+        false
+      )}
     </div>
 
     <!-- NAV Chart -->
