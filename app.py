@@ -606,11 +606,8 @@ def portfolio():
         # sale_proceeds for each closed trade = cost_usd_sold + realised_pnl_usd.
         # This correctly returns BOTH principal AND profit/loss to cash on disposal,
         # preventing cash understatement after realisations.
-        proceeds_total = sum(
-            t.get("cost_usd_sold", 0) + t.get("realised_pnl_usd", 0)
-            for t in closed
-        )
-        cash      = cfg["starting_capital"] - total_cost + proceeds_total
+        proceeds_total = sum(t.get("realised_pnl_usd", 0) for t in closed)
+        cash = cfg["starting_capital"] - total_cost + proceeds_total
         cash      = max(cash, 0)  # clamp floating-point artefacts
         total_val = total_mv + cash
 
