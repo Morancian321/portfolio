@@ -746,7 +746,7 @@ function renderDashboard(root) {
     <!-- KPI Row 1: Primary -->
     <div class="kpi-grid section-gap" style="margin-bottom:1rem">
       ${MetricCard(
-        'Portfolio Value',
+        'Net Asset Value (NAV)',
         fmt(summary.current_value, 0),
         'Since ' + (summary.inception_date || 'inception')
       )}
