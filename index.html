@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Cian Moran — Demo Investment Portfolio</title>
+<title>Cian Moran - Demo Investment Portfolio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300..700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
@@ -118,7 +118,7 @@ footer{border-top:1px solid var(--color-border);padding-block:1.5rem;margin-top:
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
-   NEW CSS — extends above; no duplication of existing rules
+   NEW CSS - extends above; no duplication of existing rules
    ════════════════════════════════════════════════════════════════════════════ */
 
 /* Navigation */
@@ -214,11 +214,11 @@ tr.row-loss td:last-child{color:var(--color-error)}
 .heatmap-table td{width:60px;text-align:center;padding:.4rem .3rem;font-size:.75rem;font-variant-numeric:tabular-nums;border-radius:3px}
 .heatmap-table th{font-size:.7rem;padding:.4rem .3rem;text-align:center}
 
-/* ── Dashboard — Band Chart ──────────────────────────────────────────────────── */
+/* ── Dashboard - Band Chart ──────────────────────────────────────────────────── */
 .dash-alloc-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin-bottom:2rem}
 @media(max-width:768px){.dash-alloc-grid{grid-template-columns:1fr}}
 
-/* ── Dashboard — filter select ───────────────────────────────────────────────── */
+/* ── Dashboard - filter select ───────────────────────────────────────────────── */
 .dash-pos-filter-select{font-size:.75rem;padding:.3rem .6rem;border-radius:var(--radius-md);border:1px solid var(--color-border);background:var(--color-surface);color:var(--color-text);cursor:pointer}
 </style>
 </head>
@@ -282,14 +282,14 @@ tr.row-loss td:last-child{color:var(--color-error)}
 
 <footer>
   <div class="container footer-inner">
-    <span class="footer-note">Demo portfolio — not financial advice. Data sourced from Google Sheets + yfinance.</span>
+    <span class="footer-note">Demo portfolio - not financial advice. Data sourced from Google Sheets + yfinance.</span>
     <span class="footer-note" id="lastUpdated"></span>
   </div>
 </footer>
 
 <script>
 // ════════════════════════════════════════════════════════════════════════════
-// SECTION 1 — THEME TOGGLE
+// SECTION 1 - THEME TOGGLE
 // ════════════════════════════════════════════════════════════════════════════
 (function(){
   const t = document.querySelector('[data-theme-toggle]');
@@ -308,7 +308,7 @@ tr.row-loss td:last-child{color:var(--color-error)}
 })();
 
 // ════════════════════════════════════════════════════════════════════════════
-// SECTION 2 — CONSTANTS
+// SECTION 2 - CONSTANTS
 // ════════════════════════════════════════════════════════════════════════════
 const API = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost'
   ? 'http://localhost:5000'
@@ -316,7 +316,7 @@ const API = window.location.hostname === '127.0.0.1' || window.location.hostname
 
 const MANDATE = {
   objective:   'TODO: Write your investment objective here',
-  universe:    'Global multi-asset — equities, bonds, infrastructure, commodities, crypto',
+  universe:    'Global multi-asset - equities, bonds, infrastructure, commodities, crypto',
   riskBudget:  'TODO: Define your max drawdown target and volatility target',
   timeHorizon: 'TODO: Define your investment time horizon',
   benchmark:   'SPY (to be replaced with blended defensive benchmark)'
@@ -334,7 +334,7 @@ const CHANGELOG = [{ date: '2026-05-08', change: 'Multi-page fund centre rebuild
 const BREACH_HISTORY = [];
 
 // ════════════════════════════════════════════════════════════════════════════
-// SECTION 3 — DATA LAYER
+// SECTION 3 - DATA LAYER
 // ════════════════════════════════════════════════════════════════════════════
 window._portfolioData = null;
 window._rationaleData = null;
@@ -367,7 +367,7 @@ const getSizingPolicy   = () => window._portfolioData?.position_sizing_policy ||
 const getBenchmarkMetrics = () => window._portfolioData?.benchmark_metrics || {};
 
 // ════════════════════════════════════════════════════════════════════════════
-// SECTION 4 — DERIVED METRICS
+// SECTION 4 - DERIVED METRICS
 // ════════════════════════════════════════════════════════════════════════════
 function computeDailyReturns(navSeries) {
   const v = navSeries.map(x => x.value);
@@ -430,11 +430,11 @@ function filterSeriesByRange(series, range) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// SECTION 5 — COMPONENT LIBRARY
+// SECTION 5 - COMPONENT LIBRARY
 // ════════════════════════════════════════════════════════════════════════════
-const fmt       = (n, dec=2) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US',{minimumFractionDigits:dec,maximumFractionDigits:dec});
-const fmtPct    = n => n == null ? '—' : (n >= 0 ? '+' : '') + Number(n).toFixed(2) + '%';
-const fmtPctRaw = n => n == null ? '—' : Number(n).toFixed(2) + '%';
+const fmt       = (n, dec=2) => n == null ? '-' : '$' + Number(n).toLocaleString('en-US',{minimumFractionDigits:dec,maximumFractionDigits:dec});
+const fmtPct    = n => n == null ? '-' : (n >= 0 ? '+' : '') + Number(n).toFixed(2) + '%';
+const fmtPctRaw = n => n == null ? '-' : Number(n).toFixed(2) + '%';
 const badgeAssetClass = ac => ({
   'Equity':'badge-equity','Fixed Income':'badge-fixed-income',
   'Infrastructure':'badge-infrastructure','Commodity':'badge-commodity','Crypto':'badge-crypto'
@@ -466,7 +466,7 @@ function FlagBadge(flag) {
 
 function TrafficLight(value, greenMax, amberMax, unit='', label='') {
   const cls = value <= greenMax ? 'tl-green' : value <= amberMax ? 'tl-amber' : 'tl-red';
-  return `<span class="traffic-light"><span class="tl-dot ${cls}"><\/span><span>${label?label+': ':''  }${value!=null?value.toFixed(2):'—'}${unit}<\/span><\/span>`;
+  return `<span class="traffic-light"><span class="tl-dot ${cls}"><\/span><span>${label?label+': ':''  }${value!=null?value.toFixed(2):'-'}${unit}<\/span><\/span>`;
 }
 
 function PlaceholderSection(title, todoDesc) {
@@ -480,8 +480,8 @@ function PolicyStatusCard(title, status, statusVariant, description, actionLabel
 function BenchmarkKpiCard(label, portVal, benchVal, higherIsBetter = true) {
   const pNum = portVal != null ? Number(portVal) : null;
   const bNum = benchVal != null ? Number(benchVal) : null;
-  const portFmt = pNum != null ? pNum.toFixed(2) : '—';
-  const benchFmt = bNum != null ? bNum.toFixed(2) : '—';
+  const portFmt = pNum != null ? pNum.toFixed(2) : '-';
+  const benchFmt = bNum != null ? bNum.toFixed(2) : '-';
   let deltaHTML = '';
   if (pNum != null && bNum != null) {
     const diff = pNum - bNum;
@@ -500,7 +500,7 @@ function DataTable(columns, rows, options={}) {
   const thead = `<tr>${columns.map(c=>`<th>${c.label}<\/th>`).join('')}<\/tr>`;
   const tbody = rows.map(row => {
     const rc = options.rowClass ? options.rowClass(row) : '';
-    const cells = columns.map(c=>`<td>${c.render?c.render(row[c.key],row):(row[c.key]??'—')}<\/td>`).join('');
+    const cells = columns.map(c=>`<td>${c.render?c.render(row[c.key],row):(row[c.key]??'-')}<\/td>`).join('');
     const click = options.rowClick ? ` style="cursor:pointer" onclick="${options.rowClick(row)}"` : '';
     return `<tr class="${rc}"${click}>${cells}<\/tr>`;
   }).join('');
@@ -539,7 +539,7 @@ function chartDefaults() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// SECTION 6 — ROUTER
+// SECTION 6 - ROUTER
 // ════════════════════════════════════════════════════════════════════════════
 const ROUTES = {
   '/overview':        renderOverview,
@@ -578,7 +578,7 @@ window.addEventListener('hashchange', () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// SECTION 7 — OVERVIEW GLOBALS & HELPERS
+// SECTION 7 - OVERVIEW GLOBALS & HELPERS
 // ════════════════════════════════════════════════════════════════════════════
 let overviewNavChart = null;
 let overviewAllocChart = null;
@@ -656,7 +656,7 @@ function _buildPosColumns() {
     },
     {
       key: 'live_price', label: 'Live Price',
-      render: (val, row) => val != null ? `${row.currency} ${Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4})}` : '—'
+      render: (val, row) => val != null ? `${row.currency} ${Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4})}` : '-'
     },
     {
       key: 'mv_usd', label: 'Market Value',
@@ -684,14 +684,14 @@ function _buildPosColumns() {
     },
     {
       key: 'flags', label: 'Flags',
-      render: val => val && val.length ? val.map(f => FlagBadge(f)).join(' ') : '<span style="color:var(--color-text-faint)">—<\/span>'
+      render: val => val && val.length ? val.map(f => FlagBadge(f)).join(' ') : '<span style="color:var(--color-text-faint)">-<\/span>'
     },
     {
       key: 'open_date', label: 'Open Date'
     },
     {
       key: 'open_date', label: 'Days Held',
-      render: val => val ? Math.round((Date.now() - new Date(val)) / 86400000) : '—'
+      render: val => val ? Math.round((Date.now() - new Date(val)) / 86400000) : '-'
     }
   ];
 }
@@ -705,7 +705,7 @@ function allocPalette(count) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// SECTION 7b — OVERVIEW PAGE
+// SECTION 7b - OVERVIEW PAGE
 // ════════════════════════════════════════════════════════════════════════════
 function renderOverview(root) {
   // Overview coming in next version
@@ -716,7 +716,7 @@ function setOverviewRange(range) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// SECTION 8 — DASHBOARD (FULL IMPLEMENTATION)
+// SECTION 8 - DASHBOARD (FULL IMPLEMENTATION)
 // ════════════════════════════════════════════════════════════════════════════
 function renderDashboard(root) {
   const summary  = getSummary();
@@ -729,7 +729,7 @@ function renderDashboard(root) {
   // ── Total P&L helpers ─────────────────────────────────────────────────────
   const pnlPos = (summary.total_pnl || 0) >= 0;
 
-  // ── Open positions filter — build unique asset classes ────────────────────
+  // ── Open positions filter - build unique asset classes ────────────────────
   const allOpenPos = getOpenPositions();
   const uniqueClasses = [...new Set(allOpenPos.map(p => p.asset_class).filter(Boolean))].sort();
   const BANDS = ['Core','Satellite','Opportunistic','Speculative','Unclassified'];
@@ -796,7 +796,7 @@ function renderDashboard(root) {
     <!-- NAV Chart -->
     <div class="chart-card section-gap">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
-        <div class="chart-title" style="margin-bottom:0">NAV vs SPY — ${currentRange}</div>
+        <div class="chart-title" style="margin-bottom:0">NAV vs SPY - ${currentRange}</div>
         <button class="btn btn-outline" style="font-size:.7rem" id="navBenchmarkInfo"
                 title="Note: SPY is used as a secondary benchmark. A blended defensive benchmark will be implemented in a future update.">
           ⓘ Benchmark
@@ -1018,7 +1018,7 @@ function renderDashboard(root) {
     const closedColumns = [
       {
         key: 'date', label: 'Date',
-        render: val => val || '—'
+        render: val => val || '-'
       },
       {
         key: 'name', label: 'Name / Ticker',
@@ -1026,7 +1026,7 @@ function renderDashboard(root) {
       },
       {
         key: 'asset_class', label: 'Class',
-        render: val => `<span class="badge ${badgeAssetClass(val)}">${val || '—'}<\/span>`
+        render: val => `<span class="badge ${badgeAssetClass(val)}">${val || '-'}<\/span>`
       },
       {
         key: 'qty', label: 'Qty',
@@ -1034,11 +1034,11 @@ function renderDashboard(root) {
       },
       {
         key: 'entry_price', label: 'Entry Price',
-        render: val => val != null ? Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}) : '—'
+        render: val => val != null ? Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}) : '-'
       },
       {
         key: 'exit_price', label: 'Exit Price',
-        render: val => val != null ? Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}) : '—'
+        render: val => val != null ? Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}) : '-'
       },
       {
         key: 'realised_pnl_usd', label: 'Realised P&L',
@@ -1049,7 +1049,7 @@ function renderDashboard(root) {
         render: (val, row) =>
           val && row.exit_price
             ? fmtPct(((row.exit_price - val) / val) * 100)
-            : '—'
+            : '-'
       }
     ];
     const closedOptions = {
@@ -1069,16 +1069,16 @@ function renderDashboard(root) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// SECTION 9 — PAGE STUB RENDERERS
+// SECTION 9 - PAGE STUB RENDERERS
 // ════════════════════════════════════════════════════════════════════════════
-function renderPositions(root)     { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Positions — coming in next version<\/p>'; }
+function renderPositions(root)     { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Positions - coming in next version<\/p>'; }
 function renderPositionDetail(root, ticker) { root.innerHTML = `<p style="padding:2rem;color:var(--color-text-muted)">Position: ${ticker}<\/p>`; }
-function renderTrades(root)        { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Trades — coming in next version<\/p>'; }
-function renderRiskGovernance(root){ root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Risk Management &amp; Governance — coming in next version<\/p>'; }
-function renderAbout(root)         { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">About — coming in next version<\/p>'; }
+function renderTrades(root)        { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Trades - coming in next version<\/p>'; }
+function renderRiskGovernance(root){ root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Risk Management &amp; Governance - coming in next version<\/p>'; }
+function renderAbout(root)         { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">About - coming in next version<\/p>'; }
 
 // ════════════════════════════════════════════════════════════════════════════
-// SECTION 10 — HAMBURGER & APP INIT
+// SECTION 10 - HAMBURGER & APP INIT
 // ════════════════════════════════════════════════════════════════════════════
 document.getElementById('hamburgerBtn').addEventListener('click', () => {
   document.getElementById('mobileNav').classList.toggle('open');
