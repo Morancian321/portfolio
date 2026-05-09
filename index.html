@@ -220,6 +220,12 @@ tr.row-loss td:last-child{color:var(--color-error)}
 
 /* ── Dashboard - filter select ───────────────────────────────────────────────── */
 .dash-pos-filter-select{font-size:.75rem;padding:.3rem .6rem;border-radius:var(--radius-md);border:1px solid var(--color-border);background:var(--color-surface);color:var(--color-text);cursor:pointer}
+
+/* ── C&CE header stat pills ──────────────────────────────────────────────────── */
+.cce-stat{display:flex;flex-direction:column;align-items:flex-end;gap:.1rem}
+.cce-stat-label{font-size:.65rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--color-text-muted)}
+.cce-stat-value{font-size:.9rem;font-weight:700;font-variant-numeric:tabular-nums;color:var(--color-text)}
+.cce-total-value{font-size:1rem;font-weight:700;color:var(--color-primary);font-variant-numeric:tabular-nums}
 </style>
 </head>
 <body>
@@ -355,16 +361,19 @@ async function fetchTradeRationale() {
   } catch { window._rationaleData = []; }
 }
 
-const getMetrics        = () => window._portfolioData?.metrics || {};
-const getSummary        = () => window._portfolioData || {};
-const getNavSeries      = () => window._portfolioData?.nav_series || [];
-const getBenchmarkSeries= () => window._portfolioData?.benchmark_series || [];
-const getOpenPositions  = () => window._portfolioData?.open_positions || [];
-const getClosedTrades   = () => window._portfolioData?.closed_trades || [];
-const getAllocation      = () => window._portfolioData?.allocation || {};
-const getFxExposure     = () => window._portfolioData?.fx_exposure || {};
-const getSizingPolicy   = () => window._portfolioData?.position_sizing_policy || {};
-const getBenchmarkMetrics = () => window._portfolioData?.benchmark_metrics || {};
+const getMetrics         = () => window._portfolioData?.metrics || {};
+const getSummary         = () => window._portfolioData || {};
+const getNavSeries       = () => window._portfolioData?.nav_series || [];
+const getBenchmarkSeries = () => window._portfolioData?.benchmark_series || [];
+const getOpenPositions   = () => window._portfolioData?.open_positions || [];
+const getClosedTrades    = () => window._portfolioData?.closed_trades || [];
+const getAllocation       = () => window._portfolioData?.allocation || {};
+const getFxExposure      = () => window._portfolioData?.fx_exposure || {};
+const getSizingPolicy    = () => window._portfolioData?.position_sizing_policy || {};
+const getBenchmarkMetrics= () => window._portfolioData?.benchmark_metrics || {};
+// C&CE sleeve getters
+const getCCEPositions    = () => window._portfolioData?.cce_positions || [];
+const getCCETotal        = () => window._portfolioData?.cce_total || 0;
 
 // ════════════════════════════════════════════════════════════════════════════
 // SECTION 4 - DERIVED METRICS
@@ -606,7 +615,8 @@ function applyDashPosFilters() {
   if (!wrap) return;
   const f = window._dashPosFilters;
   const allPositions = getOpenPositions();
-  let rows = allPositions;
+  // Exclude C&CE positions from the main open positions table — they live in the C&CE box
+  let rows = allPositions.filter(p => p.asset_class !== 'C&CE');
   if (f.assetClass !== 'All Classes') rows = rows.filter(r => r.asset_class === f.assetClass);
   if (f.band !== 'All Bands') rows = rows.filter(r => r.sizing_band === f.band);
   if (f.breachOnly) rows = rows.filter(r => r.sizing_breach);
@@ -729,10 +739,19 @@ function renderDashboard(root) {
   // ── Total P&L helpers ─────────────────────────────────────────────────────
   const pnlPos = (summary.total_pnl || 0) >= 0;
 
-  // ── Open positions filter - build unique asset classes ────────────────────
+  // ── Open positions filter - build unique asset classes (exclude C&CE) ─────
   const allOpenPos = getOpenPositions();
-  const uniqueClasses = [...new Set(allOpenPos.map(p => p.asset_class).filter(Boolean))].sort();
+  const uniqueClasses = [...new Set(
+    allOpenPos.filter(p => p.asset_class !== 'C&CE').map(p => p.asset_class).filter(Boolean)
+  )].sort();
   const BANDS = ['Core','Satellite','Opportunistic','Speculative','Unclassified'];
+
+  // ── C&CE sleeve stats for header ─────────────────────────────────────────
+  const ccePositions = getCCEPositions();
+  const cceTotal     = getCCETotal();
+  const cceMV        = ccePositions.reduce((s, p) => s + (p.mv_usd || 0), 0);
+  const uninvested   = summary.cash || 0;
+  const navTotal     = summary.current_value || 1;
 
   // ── Build HTML ────────────────────────────────────────────────────────────
   root.innerHTML = `
@@ -761,7 +780,7 @@ function renderDashboard(root) {
       )}
       ${MetricCard(
         'Open Positions',
-        getOpenPositions().length
+        allOpenPos.filter(p => p.asset_class !== 'C&CE').length
       )}
     </div>
 
@@ -841,6 +860,33 @@ function renderDashboard(root) {
         </div>
       </div>
       <div id="dashPosTableWrap"></div>
+    </div>
+
+    <!-- Cash & Cash Equivalents Box -->
+    <div class="table-card section-gap">
+      <div class="table-header">
+        <h2>Cash &amp; Cash Equivalents</h2>
+        <div style="display:flex;gap:1.5rem;align-items:center">
+          <div class="cce-stat">
+            <span class="cce-stat-label">Uninvested Cash</span>
+            <span class="cce-stat-value">${fmt(uninvested, 0)}</span>
+          </div>
+          <div class="cce-stat">
+            <span class="cce-stat-label">C&amp;CE Instruments</span>
+            <span class="cce-stat-value">${fmt(cceMV, 0)}</span>
+          </div>
+          <div style="width:1px;height:2rem;background:var(--color-divider)"></div>
+          <div class="cce-stat">
+            <span class="cce-stat-label">Total C&amp;CE</span>
+            <span class="cce-total-value">${fmt(cceTotal, 0)}</span>
+          </div>
+          <div class="cce-stat">
+            <span class="cce-stat-label">% of NAV</span>
+            <span class="cce-stat-value">${fmtPctRaw(navTotal > 0 ? (cceTotal / navTotal * 100) : 0)}</span>
+          </div>
+        </div>
+      </div>
+      <div id="dashCCETableWrap"></div>
     </div>
 
     <!-- Closed Trades Table -->
@@ -1010,6 +1056,53 @@ function renderDashboard(root) {
 
   // ── Open Positions Table (initial render via applyDashPosFilters) ──────────
   applyDashPosFilters();
+
+  // ── C&CE Table ────────────────────────────────────────────────────────────
+  const cceWrap = document.getElementById('dashCCETableWrap');
+  if (cceWrap) {
+    const cceCols = [
+      {
+        key: 'name', label: 'Name / Ticker',
+        render: (val, row) => `<strong>${val}<\/strong><br><span style="font-size:.7rem;color:var(--color-text-muted)">${row.ticker}<\/span>`
+      },
+      {
+        key: 'mv_usd', label: 'Market Value',
+        render: val => fmt(val, 0)
+      },
+      {
+        key: 'weight_pct', label: '% of NAV',
+        render: val => fmtPctRaw(val)
+      },
+      {
+        key: 'avg_price', label: 'Avg Price',
+        render: (val, row) => `${row.currency} ${Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4})}`
+      },
+      {
+        key: 'live_price', label: 'Live Price',
+        render: (val, row) => val != null
+          ? `${row.currency} ${Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4})}`
+          : '-'
+      },
+      {
+        key: 'unreal_pnl', label: 'Unrealised P&L',
+        render: val => `<span class="${val >= 0 ? 'up' : 'down'}">${fmt(val, 0)}<\/span>`
+      },
+      {
+        key: 'unreal_pct', label: 'Return %',
+        render: val => `<span class="${val >= 0 ? 'up' : 'down'}">${fmtPct(val)}<\/span>`
+      },
+      {
+        key: 'open_date', label: 'Open Date'
+      }
+    ];
+    const cceRows = getCCEPositions();
+    if (!cceRows.length) {
+      cceWrap.innerHTML = EmptyState('💵', 'No C&CE instruments deployed',
+        'Add rows with asset_class “C&CE” to your trades sheet to populate this table. Uninvested cash is shown in the header above.');
+    } else {
+      cceWrap.innerHTML = DataTable(cceCols, cceRows, {});
+    }
+  }
 
   // ── Closed Trades Table ───────────────────────────────────────────────────
   const closedWrap = document.getElementById('dashClosedTableWrap');
