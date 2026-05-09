@@ -9,6 +9,8 @@
 #   5. STRIP_OUTLIERS: threshold raised to 0.30 (30%); comment explains data-quality purpose.
 #   6. FX EXPOSURE: cash balance (in base currency) now included so percentages sum ~100%.
 #   7. CLOSE ACTION: always treated as full close; qty_held used (not trade qty); documented.
+#   8. NAV_OVERRIDES: new sheet tab allows manual price corrections for bad YFinance data.
+#      Keyed by (date, yf_ticker); applied in build_nav_curve before FX conversion.
 # SAFE: Sharpe, NAV curve logic, hit_rate, rolling_vol — unchanged.
 # ADDED: test harness under if __name__ == '__main__' for regressions.
 
@@ -79,7 +81,27 @@ def get_sheet_data():
         manual = sh.worksheet("manual_prices").get_all_records()
     except:
         manual = []
-    return trades, config, manual
+    # FIX 8: Read nav_overrides tab for manual historical price corrections.
+    # Gracefully falls back to an empty list if the sheet doesn't exist yet.
+    try:
+        nav_overrides_rows = sh.worksheet("nav_overrides").get_all_records()
+    except:
+        nav_overrides_rows = []
+    return trades, config, manual, nav_overrides_rows
+
+def parse_nav_overrides(rows):
+    """
+    Build a (date_str, yf_ticker) -> price lookup from the nav_overrides sheet.
+    Only rows with action == OVERRIDE_PRICE are included.
+    Use this to correct bad YFinance prices on specific dates before they
+    feed into the NAV curve calculation.
+    """
+    overrides = {}
+    for row in rows:
+        if str(row.get("action", "")).upper() == "OVERRIDE_PRICE":
+            key = (str(row["date"]), str(row["ticker"]))
+            overrides[key] = float(row["value"])
+    return overrides
 
 def parse_config(config_rows):
     cfg = {r["key"]: r["value"] for r in config_rows}
@@ -286,7 +308,13 @@ def build_positions(trades, fx_rates, manual_map):
 
     return open_positions, closed_trades
 
-def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
+def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None):
+    # FIX 8: nav_overrides is a dict keyed by (date_str, yf_ticker) -> corrected price.
+    # When a key matches, the override replaces the raw YFinance price for that day,
+    # before normalize_lse_price and FX conversion are applied.
+    if nav_overrides is None:
+        nav_overrides = {}
+
     inception = datetime.strptime(cfg["inception_date"], "%Y-%m-%d")
     today     = datetime.today()
     starting  = cfg["starting_capital"]
@@ -393,6 +421,12 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker):
             try:
                 if ytk in prices.columns:
                     p_raw = float(prices.loc[:dt, ytk].iloc[-1])
+                    # FIX 8: Apply nav_override if one exists for this ticker/date.
+                    # The override replaces the raw YFinance price before any further
+                    # normalisation (LSE pence->pounds) or FX conversion is applied.
+                    override_key = (ds, ytk)
+                    if override_key in nav_overrides:
+                        p_raw = nav_overrides[override_key]
                     p_gbp = normalize_lse_price(p_raw, avg_cost_gbp) if is_lse(ytk) else p_raw
                     port_val += p_gbp * fx_r * h["qty"]
                 else:
@@ -506,11 +540,12 @@ def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[]
 @app.route("/api/portfolio")
 def portfolio():
     try:
-        trades, config_rows, manual_rows = get_sheet_data()
-        cfg        = parse_config(config_rows)
-        fx_rates   = get_fx_rates()
-        rf_rate    = get_risk_free_rate()
-        manual_map = {r["ticker"]: r["manual_price"] for r in manual_rows if r.get("ticker")}
+        trades, config_rows, manual_rows, nav_overrides_rows = get_sheet_data()
+        cfg          = parse_config(config_rows)
+        fx_rates     = get_fx_rates()
+        rf_rate      = get_risk_free_rate()
+        manual_map   = {r["ticker"]: r["manual_price"] for r in manual_rows if r.get("ticker")}
+        nav_overrides = parse_nav_overrides(nav_overrides_rows)
 
         open_pos, closed = build_positions(trades, fx_rates, manual_map)
 
@@ -566,7 +601,9 @@ def portfolio():
         if cash > 0 and total_val > 0:
             alloc["Cash"] = round(cash / total_val * 100, 2)
 
-        nav_series, bench_series = build_nav_curve(trades, fx_rates, cfg, cfg["benchmark"])
+        nav_series, bench_series = build_nav_curve(
+            trades, fx_rates, cfg, cfg["benchmark"], nav_overrides=nav_overrides
+        )
         metrics = calc_metrics(nav_series, cfg["starting_capital"], rf_annual=rf_rate, closed_trades=closed)
 
         # FIX 4: Do NOT overwrite metrics["total_return_pct"] — the NAV-based value
@@ -761,6 +798,18 @@ def _run_tests():
         errors.append(f"FX exposure sum FAIL: {total_pct}% (expected ~100%)")
     else:
         print(f"  [PASS] FX exposure sums to {total_pct}%  {fx_exp}")
+
+    # ------------------------------------------------------------------
+    # TEST 5: parse_nav_overrides — only OVERRIDE_PRICE rows are parsed
+    sample_rows = [
+        {"date": "2026-05-07", "ticker": "IWDA.L", "action": "OVERRIDE_PRICE", "value": 120.1, "notes": "bad feed"},
+        {"date": "2026-05-08", "ticker": "IWDA.L", "action": "NOTE",           "value": 0,     "notes": "ignore"},
+    ]
+    ov = parse_nav_overrides(sample_rows)
+    if ov != {("2026-05-07", "IWDA.L"): 120.1}:
+        errors.append(f"parse_nav_overrides FAIL: got {ov}")
+    else:
+        print("  [PASS] parse_nav_overrides filters correctly")
 
     # ------------------------------------------------------------------
     if errors:
