@@ -391,7 +391,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None)
     # strip_outliers will then ffill the corrected price forward correctly.
     prices = apply_nav_overrides_to_prices(prices, nav_overrides)
 
-    # FIX 5 (applied here too): use updated 0.30 threshold from strip_outliers.
+    # FIX 5 (applied here too): use updated 0.125 threshold from strip_outliers.
     prices = strip_outliers(prices)
 
     def get_hist_fx(col):
