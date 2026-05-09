@@ -65,7 +65,7 @@ def normalize_lse_price(raw_price, avg_price_gbp):
 # A 15% single-day filter would silently mask real equity/ETF crash events.
 # 30% still catches data-feed errors (price reporting bugs, splits not adjusted)
 # while preserving genuine large moves like a circuit-breaker day.
-def strip_outliers(df, threshold=0.30):
+def strip_outliers(df, threshold=0.125):
     pct = df.pct_change().abs()
     df = df.mask(pct > threshold)
     df = df.ffill().bfill()
