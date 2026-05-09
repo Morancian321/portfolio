@@ -709,181 +709,16 @@ function allocPalette(count) {
   return ['#4f98a3','#d29922','#ffa657','#bc8cff','#3fb950','#58a6ff','#f85149','#6e7681'].slice(0, count);
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// SECTION 7b — OVERVIEW PAGE
+// Overview coming in next version
+// ════════════════════════════════════════════════════════════════════════════
 function renderOverview(root) {
-  const summary = getSummary();
-  const metrics = getMetrics();
-  const navSeries = getNavSeries();
-  const benchSeries = getBenchmarkSeries();
-  const allocation = getAllocation();
-  const positions = [...getOpenPositions()].sort((a,b) => (b.weight_pct || 0) - (a.weight_pct || 0));
-  const currentRange = window._overviewRange || 'Since Inception';
-
-  root.innerHTML = `
-    ${SectionHeader('Overview', 'Portfolio at a glance')}
-    <div id="overviewRangeWrap">
-      ${RangePills(currentRange, 'setOverviewRange')}
-    </div>
-
-    <div class="kpi-grid">
-      ${MetricCard('Portfolio Value', fmt(summary.current_value, 0), 'Since ' + (summary.inception_date || 'inception'))}
-      ${MetricCard('Total Return', fmtPct(metrics.total_return_pct), '', {
-        text: summary.total_pnl >= 0 ? 'Positive P&L' : 'Negative P&L',
-        cls: summary.total_pnl >= 0 ? 'up' : 'down'
-      }, summary.total_pnl >= 0 ? 'success' : 'danger')}
-      ${MetricCard('Sharpe Ratio', metrics.Sharpe_ratio != null ? Number(metrics.Sharpe_ratio).toFixed(2) : '—', 'Risk-adjusted return', null, 'default', 'Risk-adjusted return: (excess return) / (volatility) × √252')}
-      ${MetricCard('Max Drawdown', metrics.max_drawdown_pct != null ? '-' + Number(metrics.max_drawdown_pct).toFixed(2) + '%' : '—', 'Peak to trough', null, 'danger')}
-    </div>
-
-    <div class="chart-card section-gap">
-      <div class="chart-title">NAV vs SPY (Benchmark) — ${currentRange}</div>
-      <div class="chart-wrap" style="height:300px"><canvas id="overviewNavCanvas"></canvas></div>
-    </div>
-
-    <div class="grid-2 section-gap">
-      <div class="chart-card">
-        <div class="chart-title">Asset Allocation</div>
-        <div class="chart-wrap"><canvas id="overviewAllocCanvas"></canvas></div>
-      </div>
-      <div class="chart-card">
-        <div class="chart-title">Portfolio Snapshot</div>
-        <div style="display:flex;flex-direction:column;gap:1rem">
-          <div>
-            <div class="kpi-label" style="margin-bottom:.5rem">Top 3 Positions</div>
-            ${
-              positions.slice(0,3).length
-                ? positions.slice(0,3).map(p => `
-                  <div style="display:flex;justify-content:space-between;gap:1rem;padding:.45rem 0;border-bottom:1px solid var(--color-divider)">
-                    <span><strong>${p.name}</strong> <span style="color:var(--color-text-muted)">(${p.ticker})</span></span>
-                    <span>${Number(p.weight_pct || 0).toFixed(1)}%</span>
-                  </div>
-                `).join('')
-                : `<div class="empty-state" style="padding:1rem 0">No open positions.</div>`
-            }
-          </div>
-
-          <div>
-            <div class="kpi-label" style="margin-bottom:.35rem">Cash</div>
-            <div style="font-size:1rem;font-weight:600">
-              ${fmt(summary.cash, 0)}
-              <span style="font-size:.875rem;color:var(--color-text-muted)">
-                (${summary.current_value ? ((summary.cash / summary.current_value) * 100).toFixed(1) : '0.0'}%)
-              </span>
-            </div>
-          </div>
-
-          <div>
-            <div class="kpi-label" style="margin-bottom:.35rem">Risk Posture</div>
-            <div>${TrafficLight(Number(metrics.rolling_30d_vol || 0), 10, 15, '%', '30d Vol')}</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="section-gap">
-      ${SectionHeader('Navigate', '', `
-        <a href="#/dashboard" class="btn btn-primary">Dashboard →</a>
-        <a href="#/trades" class="btn btn-outline">Trades →</a>
-        <a href="#/process" class="btn btn-outline">Process →</a>
-        <a href="#/methodology" class="btn btn-outline">Methodology →</a>
-      `)}
-    </div>
-  `;
-
-  const filteredNav = filterSeriesByRange(navSeries, currentRange);
-  const filteredBench = filterSeriesByRange(benchSeries, currentRange);
-  const c = chartDefaults();
-
-  destroyChartSafe(overviewNavChart);
-  const navCtx = document.getElementById('overviewNavCanvas')?.getContext('2d');
-  if (navCtx) {
-    overviewNavChart = new Chart(navCtx, {
-      type: 'line',
-      data: {
-        datasets: [
-          {
-            label: 'Portfolio',
-            data: filteredNav.map(x => ({ x: x.date, y: x.value })),
-            borderColor: '#4f98a3',
-            backgroundColor: 'rgba(79,152,163,.08)',
-            borderWidth: 2,
-            pointRadius: 0,
-            fill: true,
-            tension: .3
-          },
-          {
-            label: 'SPY',
-            data: filteredBench.map(x => ({ x: x.date, y: x.value })),
-            borderColor: '#d29922',
-            borderWidth: 1.5,
-            borderDash: [4,3],
-            pointRadius: 0,
-            fill: false,
-            tension: .3
-          }
-        ]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: { mode:'index', intersect:false },
-        plugins: {
-          legend: { labels:{ color:c.text, font:{ size:11 }, boxWidth:24, padding:16 } },
-          tooltip: {
-            backgroundColor: c.tooltip_bg,
-            borderColor: c.tooltip_border,
-            borderWidth: 1,
-            titleColor: c.text,
-            bodyColor: c.text
-          }
-        },
-        scales: {
-          x: { type:'time', time:{ unit:'month' }, grid:{ color:c.grid }, ticks:{ color:c.text, font:{ size:11 } } },
-          y: { grid:{ color:c.grid }, ticks:{ color:c.text, font:{ size:11 }, callback:v => '$' + Number(v).toLocaleString('en-US',{ maximumFractionDigits:0 }) } }
-        }
-      }
-    });
-  }
-
-  destroyChartSafe(overviewAllocChart);
-  const allocCtx = document.getElementById('overviewAllocCanvas')?.getContext('2d');
-  if (allocCtx) {
-    const labels = Object.keys(allocation || {});
-    const vals = Object.values(allocation || {});
-    overviewAllocChart = new Chart(allocCtx, {
-      type: 'doughnut',
-      data: {
-        labels,
-        datasets: [{
-          data: vals,
-          backgroundColor: allocPalette(labels.length),
-          borderWidth: 2,
-          borderColor: document.documentElement.getAttribute('data-theme') === 'dark' ? '#161b22' : '#f9f8f5'
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        cutout: '62%',
-        plugins: {
-          legend: { position:'bottom', labels:{ color:c.text, font:{ size:11 }, padding:12, boxWidth:12 } },
-          tooltip: {
-            backgroundColor: c.tooltip_bg,
-            borderColor: c.tooltip_border,
-            borderWidth: 1,
-            titleColor: c.text,
-            bodyColor: c.text,
-            callbacks: { label: ctx => ' ' + ctx.label + ': ' + Number(ctx.parsed).toFixed(1) + '%' }
-          }
-        }
-      }
-    });
-  }
+  // Overview coming in next version
 }
 
 function setOverviewRange(range) {
   window._overviewRange = range;
-  const root = document.getElementById('appRoot');
-  if (root) renderOverview(root);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -913,8 +748,6 @@ function renderDashboard(root) {
     : fmtPctRaw(cashPct) + ' of portfolio';
 
   // ── Total P&L helpers ─────────────────────────────────────────────────────
-  // FIX: use simple_total_return_pct (total_pnl / starting_capital) so the %
-  // is always derived from the same calculation as the $ figure shown above it.
   const pnlPos = (summary.total_pnl || 0) >= 0;
   const retPos = (metrics.total_return_pct || 0) >= 0;
 
