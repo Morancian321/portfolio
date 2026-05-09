@@ -23,6 +23,9 @@
 #      rather than from the yf.download() batch prices. This eliminates the divergence
 #      between the NAV endpoint and the KPI current_value caused by yfinance returning
 #      slightly different prices from its two call paths (download vs Ticker.history).
+#  11. BENCHMARK METRICS: calc_benchmark_metrics() computes Sharpe, Sortino, max drawdown,
+#      and 30d rolling vol for the benchmark (SPY) series using identical formulas to
+#      calc_metrics(). Exposed as benchmark_metrics in /api/portfolio response.
 # SAFE: Sharpe, NAV curve logic, hit_rate, rolling_vol — unchanged.
 # ADDED: test harness under if __name__ == '__main__' for regressions.
 
@@ -390,14 +393,10 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
 
     # FIX 9: Strip timezone from prices index so that tz-naive pd.bdate_range()
     # timestamps can be used in prices.loc[:dt] without raising TypeError.
-    # yf.download() always returns a tz-aware UTC DatetimeIndex; bdate_range()
-    # is always tz-naive. Mixing them in .loc slicing silently fails (except: pass
-    # catches the TypeError) and values all holdings at 0, causing flat NAV + spikes.
     if prices.index.tz is not None:
         prices.index = prices.index.tz_convert("UTC").tz_localize(None)
 
     # FIX 8: Inject overrides into the raw DataFrame BEFORE strip_outliers.
-    # strip_outliers will then ffill the corrected price forward correctly.
     prices = apply_nav_overrides_to_prices(prices, nav_overrides)
 
     # FIX 5 (applied here too): use updated 0.125 threshold from strip_outliers.
@@ -478,9 +477,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
                         holdings[tk]["qty"] -= close_qty
 
         # FIX 10: On the final date, use live prices from build_positions() so the
-        # NAV endpoint matches the KPI current_value exactly. Both now share the
-        # same yf.Ticker().history("2d") price source, eliminating the divergence
-        # caused by yf.download() batch prices vs per-ticker history() calls.
+        # NAV endpoint matches the KPI current_value exactly.
         is_final_date = (dt == last_date)
         if is_final_date and live_positions_mv is not None and live_cash is not None:
             port_val = live_cash + live_positions_mv
@@ -493,7 +490,6 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
                 avg_cost_gbp = h.get("avg_cost_gbp", 0)
                 try:
                     if ytk in prices.columns:
-                        # Overrides are already baked into the DataFrame at this point.
                         p_raw = float(prices.loc[:dt, ytk].iloc[-1])
                         p_gbp = normalize_lse_price(p_raw, avg_cost_gbp) if is_lse(ytk) else p_raw
                         port_val += p_gbp * fx_r * h["qty"]
@@ -531,13 +527,9 @@ def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[]
     total_return = (values[-1] - starting_capital) / starting_capital * 100
 
     # FIX 1: Sortino — standard downside deviation using ALL N returns in denominator.
-    # downside_std = sqrt( (1/N) * sum( min(r_i - rf, 0)^2 ) )
-    # Only the min(r-rf, 0) term is non-zero for returns above rf,
-    # but N is the full sample size — not just the count of bad days.
     downside_sq_sum = sum(min(r - rf_daily, 0) ** 2 for r in daily_returns)
-    downside_var    = downside_sq_sum / n  # divide by ALL N returns
+    downside_var    = downside_sq_sum / n
     downside_std    = math.sqrt(downside_var)
-    # Guard against zero downside deviation (all returns >= rf) to avoid division by zero.
     sortino_ratio   = ((mean_r - rf_daily) / downside_std * math.sqrt(252)) if downside_std > 0 else 0
 
     last30          = daily_returns[-30:] if len(daily_returns) >= 30 else daily_returns
@@ -547,7 +539,6 @@ def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[]
     downside_deviation = downside_std * math.sqrt(252) * 100
 
     # FIX 3: Recovery / drawdown trough — clear, explicit loop.
-    # Tracks peak, running max drawdown, and the trough index where max_dd occurred.
     peak_val  = values[0]
     max_dd    = 0.0
     trough_val = values[0]
@@ -605,6 +596,57 @@ def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[]
         "total_realised_pnl": total_realised_pnl,
     }
 
+def calc_benchmark_metrics(bench_series, rf_annual=0.043):
+    """
+    FIX 11: Compute Sharpe, Sortino, max drawdown, and 30d rolling volatility
+    for the benchmark (SPY) series using identical formulas to calc_metrics().
+    bench_series is the rebased NAV-equivalent series already built in build_nav_curve().
+    Returns a flat dict exposed as benchmark_metrics in /api/portfolio.
+    """
+    if len(bench_series) < 2:
+        return {
+            "benchmark_sharpe":       None,
+            "benchmark_sortino":      None,
+            "benchmark_max_drawdown_pct": None,
+            "benchmark_rolling_30d_vol":  None,
+        }
+    import math
+    values        = [x["value"] for x in bench_series]
+    daily_returns = [(values[i] - values[i-1]) / values[i-1] for i in range(1, len(values))]
+    n        = len(daily_returns)
+    mean_r   = sum(daily_returns) / n
+    rf_daily = rf_annual / 252
+    variance = sum((r - mean_r)**2 for r in daily_returns) / (n - 1) if n > 1 else 0
+    std_r    = math.sqrt(variance)
+    sharpe   = ((mean_r - rf_daily) / std_r * math.sqrt(252)) if std_r > 0 else 0
+
+    downside_sq_sum = sum(min(r - rf_daily, 0) ** 2 for r in daily_returns)
+    downside_var    = downside_sq_sum / n
+    downside_std    = math.sqrt(downside_var)
+    sortino         = ((mean_r - rf_daily) / downside_std * math.sqrt(252)) if downside_std > 0 else 0
+
+    last30      = daily_returns[-30:] if len(daily_returns) >= 30 else daily_returns
+    last30_mean = sum(last30) / len(last30) if last30 else 0
+    rolling_std = math.sqrt(sum((r - last30_mean)**2 for r in last30) / max(len(last30) - 1, 1))
+    vol_30d     = rolling_std * math.sqrt(252) * 100
+
+    peak_val = values[0]
+    max_dd   = 0.0
+    for v in values:
+        if v > peak_val:
+            peak_val = v
+        if peak_val > 0:
+            dd = (peak_val - v) / peak_val
+            if dd > max_dd:
+                max_dd = dd
+
+    return {
+        "benchmark_sharpe":           round(sharpe, 2),
+        "benchmark_sortino":          round(sortino, 2),
+        "benchmark_max_drawdown_pct": round(max_dd * 100, 2),
+        "benchmark_rolling_30d_vol":  round(vol_30d, 2),
+    }
+
 @app.route("/api/portfolio")
 def portfolio():
     try:
@@ -621,12 +663,9 @@ def portfolio():
         total_cost = sum(p["cost_usd"] for p in open_pos)
 
         # FIX 2: Cash = starting_capital - cost_of_open_positions + sum(sale_proceeds).
-        # sale_proceeds for each closed trade = cost_usd_sold + realised_pnl_usd.
-        # This correctly returns BOTH principal AND profit/loss to cash on disposal,
-        # preventing cash understatement after realisations.
         proceeds_total = sum(t.get("realised_pnl_usd", 0) for t in closed)
         cash = cfg["starting_capital"] - total_cost + proceeds_total
-        cash      = max(cash, 0)  # clamp floating-point artefacts
+        cash      = max(cash, 0)
         total_val = total_mv + cash
 
         for p in open_pos:
@@ -657,7 +696,7 @@ def portfolio():
                     break
             else:
                 p["sizing_band"]   = "Unclassified"
-                p["sizing_breach"] = False
+                p["sizing_breach\"] = False
 
         alloc = {}
         for p in open_pos:
@@ -666,8 +705,7 @@ def portfolio():
         if cash > 0 and total_val > 0:
             alloc["Cash"] = round(cash / total_val * 100, 2)
 
-        # FIX 10: Pass live_positions_mv and live_cash into build_nav_curve so the
-        # final NAV point is anchored to the same prices as the KPI current_value.
+        # FIX 10: Pass live_positions_mv and live_cash into build_nav_curve.
         nav_series, bench_series = build_nav_curve(
             trades, fx_rates, cfg, cfg["benchmark"],
             nav_overrides=nav_overrides,
@@ -676,21 +714,20 @@ def portfolio():
         )
         metrics = calc_metrics(nav_series, cfg["starting_capital"], rf_annual=rf_rate, closed_trades=closed)
 
-        # FIX 4: Do NOT overwrite metrics["total_return_pct"] — the NAV-based value
-        # from calc_metrics is canonical. Expose a simple money-weighted version
-        # under a separate key so both are available without clobbering each other.
+        # FIX 11: Compute benchmark KPIs using the same rf_rate for fair comparison.
+        bench_metrics = calc_benchmark_metrics(bench_series, rf_annual=rf_rate)
+
+        # FIX 4: Do NOT overwrite metrics["total_return_pct"].
         simple_total_return_pct = (
             round((total_val - cfg["starting_capital"]) / cfg["starting_capital"] * 100, 2)
             if cfg["starting_capital"] else 0
         )
 
         # FIX 6: FX exposure — include cash in base currency bucket.
-        # Cash is assumed to be held in base_currency (default: USD).
         base_ccy = cfg.get("base_currency", "USD")
         fx_exposure = {}
         for currency in ["USD", "GBP", "EUR"]:
             ccy_mv = sum(p["mv_usd"] for p in open_pos if p["currency"] == currency)
-            # Add cash balance to the base currency bucket so percentages sum ~100%.
             if currency == base_ccy:
                 ccy_mv += cash
             fx_exposure[currency + "_pct"] = round(ccy_mv / total_val * 100, 2) if total_val else 0
@@ -704,6 +741,7 @@ def portfolio():
             "total_pnl":                round(total_val - cfg["starting_capital"], 2),
             "cash":                     round(cash, 2),
             "metrics":                  metrics,
+            "benchmark_metrics":        bench_metrics,
             "simple_total_return_pct":  simple_total_return_pct,
             "rf_rate":                  round(rf_rate * 100, 3),
             "open_positions":           open_pos,
@@ -767,8 +805,6 @@ def index():
 
 # =============================================================================
 # TEST HARNESS — run with: python app.py
-# These tests use only stdlib; no test framework required.
-# They verify the fixes without touching the live sheet or yfinance.
 # =============================================================================
 def _run_tests():
     import math
@@ -776,8 +812,7 @@ def _run_tests():
     print("=== Running regression tests ===")
     errors = []
 
-    # ------------------------------------------------------------------
-    # TEST 1: Sortino ratio — standard downside deviation
+    # TEST 1: Sortino ratio
     rf_daily   = 0.0
     returns    = [0.01, -0.02, 0.03, -0.01, 0.02]
     n          = len(returns)
@@ -800,8 +835,7 @@ def _run_tests():
     else:
         print("  [PASS] Sortino zero-downside = 0 (no crash)")
 
-    # ------------------------------------------------------------------
-    # TEST 2: calc_metrics — max drawdown and trough date
+    # TEST 2: calc_metrics max drawdown and trough date
     nav = [
         {"date": "2024-01-01", "value": 100},
         {"date": "2024-01-02", "value": 105},
@@ -820,8 +854,7 @@ def _run_tests():
     else:
         print(f"  [PASS] Trough date = {m['recovery_status']['trough_date']}")
 
-    # ------------------------------------------------------------------
-    # TEST 3: Cash calculation — proceeds include principal + P&L
+    # TEST 3: Cash calculation
     starting  = 10000.0
     total_cost_open = 3000.0
     closed_t = [{"cost_usd_sold": 2000.0, "realised_pnl_usd": 200.0}]
@@ -832,8 +865,7 @@ def _run_tests():
     else:
         print(f"  [PASS] Cash = {cash_test}")
 
-    # ------------------------------------------------------------------
-    # TEST 4: FX exposure sums to ~100% when cash included
+    # TEST 4: FX exposure sums to ~100%
     test_positions = [
         {"currency": "USD", "mv_usd": 3000},
         {"currency": "GBP", "mv_usd": 2000},
@@ -853,8 +885,7 @@ def _run_tests():
     else:
         print(f"  [PASS] FX exposure sums to {total_pct}%  {fx_exp}")
 
-    # ------------------------------------------------------------------
-    # TEST 5: parse_nav_overrides — only OVERRIDE_PRICE rows are parsed
+    # TEST 5: parse_nav_overrides
     sample_rows = [
         {"date": "2026-05-07", "ticker": "IWDA.L", "action": "OVERRIDE_PRICE", "value": 120.1, "notes": "bad feed"},
         {"date": "2026-05-08", "ticker": "IWDA.L", "action": "NOTE",           "value": 0,     "notes": "ignore"},
@@ -865,8 +896,7 @@ def _run_tests():
     else:
         print("  [PASS] parse_nav_overrides filters correctly")
 
-    # ------------------------------------------------------------------
-    # TEST 6: apply_nav_overrides_to_prices — override is stamped into DataFrame
+    # TEST 6: apply_nav_overrides_to_prices
     idx = pd.to_datetime(["2026-05-06", "2026-05-07", "2026-05-08"])
     df_test = pd.DataFrame({"IWDA.L": [119.5, 9999.0, 120.2]}, index=idx)
     ov_map  = {("2026-05-07", "IWDA.L"): 120.1}
@@ -877,14 +907,12 @@ def _run_tests():
     else:
         print(f"  [PASS] apply_nav_overrides_to_prices stamped correctly ({corrected})")
 
-    # ------------------------------------------------------------------
-    # TEST 7: TZ fix — prices.loc[:dt] works after tz_localize(None)
+    # TEST 7: TZ fix
     idx_tz = pd.to_datetime(["2026-05-06", "2026-05-07", "2026-05-08"]).tz_localize("UTC")
     df_tz = pd.DataFrame({"IWDA.L": [119.5, 120.1, 120.2]}, index=idx_tz)
-    # Apply the fix
     if df_tz.index.tz is not None:
         df_tz.index = df_tz.index.tz_convert("UTC").tz_localize(None)
-    dt_naive = pd.bdate_range(start="2026-05-06", end="2026-05-08")[1]  # 2026-05-07
+    dt_naive = pd.bdate_range(start="2026-05-06", end="2026-05-08")[1]
     try:
         val = float(df_tz.loc[:dt_naive, "IWDA.L"].iloc[-1])
         if abs(val - 120.1) > 1e-6:
@@ -894,22 +922,35 @@ def _run_tests():
     except Exception as e:
         errors.append(f"TZ fix FAIL: raised {type(e).__name__}: {e}")
 
-    # ------------------------------------------------------------------
-    # TEST 8: FIX 10 — NAV final-day alignment uses live_positions_mv + live_cash
-    # Simulate: batch prices would give port_val = 99000, but live gives 100500.
-    # Verify the final NAV point uses the live value.
+    # TEST 8: FIX 10 NAV final-day alignment
     mock_nav = [{"date": "2026-05-07", "value": 99000.0}]
     live_mv   = 95000.0
     live_cash_val = 5500.0
-    expected_final = live_mv + live_cash_val  # 100500.0
-    # Simulate what the loop does on the final date with the fix applied
+    expected_final = live_mv + live_cash_val
     simulated_final = live_cash_val + live_mv
     if abs(simulated_final - expected_final) > 0.01:
         errors.append(f"FIX 10 alignment FAIL: got {simulated_final}, expected {expected_final}")
     else:
         print(f"  [PASS] FIX 10: final NAV point = {simulated_final} (live prices anchor)")
 
-    # ------------------------------------------------------------------
+    # TEST 9: calc_benchmark_metrics returns correct keys and plausible values
+    bench_nav = [
+        {"date": "2024-01-01", "value": 100},
+        {"date": "2024-01-02", "value": 102},
+        {"date": "2024-01-03", "value": 101},
+        {"date": "2024-01-04", "value": 105},
+        {"date": "2024-01-05", "value": 103},
+    ]
+    bm = calc_benchmark_metrics(bench_nav, rf_annual=0.0)
+    required_keys = ["benchmark_sharpe", "benchmark_sortino", "benchmark_max_drawdown_pct", "benchmark_rolling_30d_vol"]
+    missing = [k for k in required_keys if k not in bm]
+    if missing:
+        errors.append(f"calc_benchmark_metrics missing keys: {missing}")
+    elif any(bm[k] is None for k in required_keys):
+        errors.append(f"calc_benchmark_metrics returned None values: {bm}")
+    else:
+        print(f"  [PASS] calc_benchmark_metrics keys present, values: {bm}")
+
     if errors:
         print("\n=== FAILURES ===")
         for e in errors:
