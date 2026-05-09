@@ -245,15 +245,9 @@ tr.row-loss td:last-child{color:var(--color-error)}
     <nav class="main-nav">
       <a href="#/overview">Overview</a>
       <a href="#/dashboard">Dashboard</a>
-      <a href="#/performance">Performance</a>
-      <a href="#/risk">Risk</a>
       <a href="#/positions">Positions</a>
       <a href="#/trades">Trades</a>
-      <a href="#/process">Process</a>
-      <a href="#/governance">Governance</a>
-      <a href="#/research">Research</a>
-      <a href="#/methodology">Methodology</a>
-      <a href="#/downloads">Downloads</a>
+      <a href="#/risk-governance">Risk Management &amp; Governance</a>
       <a href="#/about">About</a>
     </nav>
     <div class="header-right">
@@ -272,15 +266,9 @@ tr.row-loss td:last-child{color:var(--color-error)}
   <nav class="mobile-nav" id="mobileNav">
     <a href="#/overview">Overview</a>
     <a href="#/dashboard">Dashboard</a>
-    <a href="#/performance">Performance</a>
-    <a href="#/risk">Risk</a>
     <a href="#/positions">Positions</a>
     <a href="#/trades">Trades</a>
-    <a href="#/process">Process</a>
-    <a href="#/governance">Governance</a>
-    <a href="#/research">Research</a>
-    <a href="#/methodology">Methodology</a>
-    <a href="#/downloads">Downloads</a>
+    <a href="#/risk-governance">Risk Management &amp; Governance</a>
     <a href="#/about">About</a>
   </nav>
 </header>
@@ -341,7 +329,6 @@ const ABOUT_CONTENT = {
 };
 
 const WATCHLIST = [];    // TODO: { name, ticker, rationale, targetEntry, status, notes }
-const RESEARCH_ENTRIES = [];  // TODO: type: "memo"|"case_study"|"postmortem"
 const TARGET_WEIGHTS = { IWDA: 25, AGGG: 22 };  // TODO: fill in all tickers
 const CHANGELOG = [{ date: '2026-05-08', change: 'Multi-page fund centre rebuild', commit: 'TODO' }];
 const BREACH_HISTORY = [];
@@ -555,18 +542,12 @@ function chartDefaults() {
 // SECTION 6 — ROUTER
 // ════════════════════════════════════════════════════════════════════════════
 const ROUTES = {
-  '/overview':    renderOverview,
-  '/dashboard':   renderDashboard,
-  '/performance': renderPerformance,
-  '/risk':        renderRisk,
-  '/positions':   renderPositions,
-  '/trades':      renderTrades,
-  '/process':     renderProcess,
-  '/governance':  renderGovernance,
-  '/research':    renderResearch,
-  '/methodology': renderMethodology,
-  '/downloads':   renderDownloads,
-  '/about':       renderAbout,
+  '/overview':        renderOverview,
+  '/dashboard':       renderDashboard,
+  '/positions':       renderPositions,
+  '/trades':          renderTrades,
+  '/risk-governance': renderRiskGovernance,
+  '/about':           renderAbout,
 };
 
 function getRoute() {
@@ -1088,18 +1069,12 @@ function renderDashboard(root) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// SECTION 9 — OTHER PAGE STUB RENDERERS
+// SECTION 9 — PAGE STUB RENDERERS
 // ════════════════════════════════════════════════════════════════════════════
-function renderPerformance(root)   { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Performance — coming in next version<\/p>'; }
-function renderRisk(root)          { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Risk — coming in next version<\/p>'; }
 function renderPositions(root)     { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Positions — coming in next version<\/p>'; }
 function renderPositionDetail(root, ticker) { root.innerHTML = `<p style="padding:2rem;color:var(--color-text-muted)">Position: ${ticker}<\/p>`; }
 function renderTrades(root)        { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Trades — coming in next version<\/p>'; }
-function renderProcess(root)       { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Process — coming in next version<\/p>'; }
-function renderGovernance(root)    { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Governance — coming in next version<\/p>'; }
-function renderResearch(root)      { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Research — coming in next version<\/p>'; }
-function renderMethodology(root)   { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Methodology — coming in next version<\/p>'; }
-function renderDownloads(root)     { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Downloads — coming in next version<\/p>'; }
+function renderRiskGovernance(root){ root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Risk Management &amp; Governance — coming in next version<\/p>'; }
 function renderAbout(root)         { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">About — coming in next version<\/p>'; }
 
 // ════════════════════════════════════════════════════════════════════════════
