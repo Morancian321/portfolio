@@ -696,7 +696,7 @@ def portfolio():
                     break
             else:
                 p["sizing_band"]   = "Unclassified"
-                p["sizing_breach\"] = False
+                p["sizing_breach"] = False
 
         alloc = {}
         for p in open_pos:
