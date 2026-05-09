@@ -13,6 +13,11 @@
 #      strip_outliers runs, so the clean price is ffill'd forward correctly.
 #      Previous approach applied overrides inside the daily loop after strip_outliers had
 #      already baked the bad ffill'd value into the DataFrame — so the fix had no effect.
+#   9. TZ FIX: yf.download() returns a tz-aware UTC index; pd.bdate_range() is tz-naive.
+#      prices.loc[:dt] in the NAV loop raised TypeError (silently caught by except: pass),
+#      valuing every holding at 0 and producing the flat line + spike in the NAV chart.
+#      Fix: strip timezone from prices.index immediately after download so all .loc
+#      slicing uses tz-naive timestamps throughout.
 # SAFE: Sharpe, NAV curve logic, hit_rate, rolling_vol — unchanged.
 # ADDED: test harness under if __name__ == '__main__' for regressions.
 
@@ -120,8 +125,10 @@ def apply_nav_overrides_to_prices(prices, nav_overrides):
     By injecting overrides here, strip_outliers sees the corrected value and
     ffills the clean price forward instead.
 
-    Dates in nav_overrides use YYYY-MM-DD strings. The prices index is timezone-aware
-    (UTC) from yfinance. We normalise both to date-only for matching.
+    Dates in nav_overrides use YYYY-MM-DD strings. The prices index may be
+    tz-aware (UTC) from yfinance — but by the time this function is called,
+    FIX 9 has already stripped the timezone so the index is tz-naive.
+    idx_map uses strftime for safe date-string matching regardless.
     """
     if not nav_overrides:
         return prices
@@ -344,7 +351,10 @@ def build_positions(trades, fx_rates, manual_map):
 def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None):
     # FIX 8: nav_overrides are injected into the prices DataFrame via
     # apply_nav_overrides_to_prices() BEFORE strip_outliers runs.
-    # This ensures the clean price is what gets ffill'd forward, not the bad YF value.
+    # FIX 9: prices.index is stripped of timezone after yf.download() so that
+    # prices.loc[:dt] works correctly — pd.bdate_range() is tz-naive and
+    # yf.download() returns tz-aware UTC; mixing them raises TypeError which
+    # was silently caught by except: pass, valuing all holdings at 0.
     if nav_overrides is None:
         nav_overrides = {}
 
@@ -368,6 +378,14 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None)
         prices = raw["Close"]
     else:
         prices = raw[["Close"]] if "Close" in raw.columns else raw
+
+    # FIX 9: Strip timezone from prices index so that tz-naive pd.bdate_range()
+    # timestamps can be used in prices.loc[:dt] without raising TypeError.
+    # yf.download() always returns a tz-aware UTC DatetimeIndex; bdate_range()
+    # is always tz-naive. Mixing them in .loc slicing silently fails (except: pass
+    # catches the TypeError) and values all holdings at 0, causing flat NAV + spikes.
+    if prices.index.tz is not None:
+        prices.index = prices.index.tz_convert("UTC").tz_localize(None)
 
     # FIX 8: Inject overrides into the raw DataFrame BEFORE strip_outliers.
     # strip_outliers will then ffill the corrected price forward correctly.
@@ -829,8 +847,6 @@ def _run_tests():
 
     # ------------------------------------------------------------------
     # TEST 6: apply_nav_overrides_to_prices — override is stamped into DataFrame
-    # Build a tiny prices DataFrame with a bad IWDA.L price on 2026-05-07,
-    # apply the override, and verify the value is corrected before strip_outliers runs.
     idx = pd.to_datetime(["2026-05-06", "2026-05-07", "2026-05-08"])
     df_test = pd.DataFrame({"IWDA.L": [119.5, 9999.0, 120.2]}, index=idx)
     ov_map  = {("2026-05-07", "IWDA.L"): 120.1}
@@ -840,6 +856,23 @@ def _run_tests():
         errors.append(f"apply_nav_overrides_to_prices FAIL: got {corrected}, expected 120.1")
     else:
         print(f"  [PASS] apply_nav_overrides_to_prices stamped correctly ({corrected})")
+
+    # ------------------------------------------------------------------
+    # TEST 7: TZ fix — prices.loc[:dt] works after tz_localize(None)
+    idx_tz = pd.to_datetime(["2026-05-06", "2026-05-07", "2026-05-08"]).tz_localize("UTC")
+    df_tz = pd.DataFrame({"IWDA.L": [119.5, 120.1, 120.2]}, index=idx_tz)
+    # Apply the fix
+    if df_tz.index.tz is not None:
+        df_tz.index = df_tz.index.tz_convert("UTC").tz_localize(None)
+    dt_naive = pd.bdate_range(start="2026-05-06", end="2026-05-08")[1]  # 2026-05-07
+    try:
+        val = float(df_tz.loc[:dt_naive, "IWDA.L"].iloc[-1])
+        if abs(val - 120.1) > 1e-6:
+            errors.append(f"TZ fix FAIL: got {val}, expected 120.1")
+        else:
+            print(f"  [PASS] TZ fix: prices.loc[:dt_naive] = {val} (no TypeError)")
+    except Exception as e:
+        errors.append(f"TZ fix FAIL: raised {type(e).__name__}: {e}")
 
     # ------------------------------------------------------------------
     if errors:
