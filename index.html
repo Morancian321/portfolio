@@ -746,6 +746,10 @@ function renderDashboard(root) {
   )].sort();
   const BANDS = ['Core','Satellite','Opportunistic','Speculative','Unclassified'];
 
+  // ── C&CE totals for KPI card ──────────────────────────────────────────────
+  const cceTotal  = getCCETotal();
+  const navTotal  = summary.current_value || 1;
+
   // ── Build HTML ────────────────────────────────────────────────────────────
   root.innerHTML = `
     ${SectionHeader('Dashboard', 'Full portfolio analytics')}
@@ -774,6 +778,11 @@ function renderDashboard(root) {
       ${MetricCard(
         'Open Positions',
         allOpenPos.filter(p => p.asset_class !== 'C&CE').length
+      )}
+      ${MetricCard(
+        'Cash &amp; Cash Equivalents',
+        fmt(cceTotal, 0),
+        fmtPctRaw(navTotal > 0 ? (cceTotal / navTotal * 100) : 0) + ' of NAV'
       )}
     </div>
 
@@ -1119,7 +1128,7 @@ function renderPositions(root) {
     ];
     cceWrap.innerHTML = !ccePositions.length
       ? EmptyState('💵', 'No C&CE instruments deployed',
-          'Add rows with asset_class “C&CE” to your trades sheet to populate this table. Uninvested cash is shown in the header above.')
+          'Add rows with asset_class "C&CE" to your trades sheet to populate this table. Uninvested cash is shown in the header above.')
       : DataTable(cceCols, ccePositions, {});
   }
 }
