@@ -913,6 +913,8 @@ function renderDashboard(root) {
     : fmtPctRaw(cashPct) + ' of portfolio';
 
   // ── Total P&L helpers ─────────────────────────────────────────────────────
+  // FIX: use simple_total_return_pct (total_pnl / starting_capital) so the %
+  // is always derived from the same calculation as the $ figure shown above it.
   const pnlPos = (summary.total_pnl || 0) >= 0;
   const retPos = (metrics.total_return_pct || 0) >= 0;
 
@@ -939,7 +941,7 @@ function renderDashboard(root) {
         'Total P&amp;L',
         fmt(summary.total_pnl, 2),
         '',
-        { text: fmtPct(metrics.total_return_pct), cls: pnlPos ? 'up' : 'down' },
+        { text: fmtPct(summary.simple_total_return_pct), cls: pnlPos ? 'up' : 'down' },
         pnlPos ? 'success' : 'danger'
       )}
       ${MetricCard(
