@@ -641,7 +641,7 @@ function _buildPosColumns() {
   return [
     {
       key: 'name', label: 'Name',
-      render: (val, row) => `<strong>${val}</strong><br><span style="font-size:.7rem;color:var(--color-text-muted)">${row.ticker}<\/span>`
+      render: (val, row) => `<strong>${val}<\/strong><br><span style="font-size:.7rem;color:var(--color-text-muted)">${row.ticker}<\/span>`
     },
     {
       key: 'asset_class', label: 'Class',
@@ -711,7 +711,6 @@ function allocPalette(count) {
 
 // ════════════════════════════════════════════════════════════════════════════
 // SECTION 7b — OVERVIEW PAGE
-// Overview coming in next version
 // ════════════════════════════════════════════════════════════════════════════
 function renderOverview(root) {
   // Overview coming in next version
@@ -732,27 +731,8 @@ function renderDashboard(root) {
   const allocation  = getAllocation();
   const currentRange = window._dashRange || 'Since Inception';
 
-  // ── Recovery status helper ────────────────────────────────────────────────
-  const recovery = metrics.recovery_status || { status: '—', days_since_trough: '—' };
-  const recoveryVariant = {
-    'At Peak':    'success',
-    'Recovered':  'info',
-    'Recovering': 'warning'
-  }[recovery.status] || 'default';
-
-  // ── Cash logic ────────────────────────────────────────────────────────────
-  const cashPct = summary.current_value ? (summary.cash / summary.current_value) * 100 : 0;
-  const cashVariant  = cashPct > 3 ? 'warning' : 'default';
-  const cashSubtitle = cashPct > 3
-    ? 'Consider deploying — see Governance'
-    : fmtPctRaw(cashPct) + ' of portfolio';
-
   // ── Total P&L helpers ─────────────────────────────────────────────────────
   const pnlPos = (summary.total_pnl || 0) >= 0;
-  const retPos = (metrics.total_return_pct || 0) >= 0;
-
-  // ── Hit rate & trade stats ────────────────────────────────────────────────
-  const hitPos = (metrics.hit_rate_pct || 0) > 50;
 
   // ── Open positions filter — build unique asset classes ────────────────────
   const allOpenPos = getOpenPositions();
@@ -778,23 +758,20 @@ function renderDashboard(root) {
         pnlPos ? 'success' : 'danger'
       )}
       ${MetricCard(
-        'Total Return',
-        fmtPct(metrics.total_return_pct),
-        'Since inception',
+        'Realised P&amp;L',
+        fmt(metrics.total_realised_pnl, 0),
+        '',
         null,
-        retPos ? 'success' : 'danger'
+        (metrics.total_realised_pnl || 0) >= 0 ? 'success' : 'danger'
       )}
       ${MetricCard(
-        'Cash',
-        fmt(summary.cash, 0),
-        cashSubtitle,
-        null,
-        cashVariant
+        'Open Positions',
+        getOpenPositions().length
       )}
     </div>
 
     <!-- KPI Row 2: Risk & Performance -->
-    <div class="kpi-grid section-gap" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr));margin-bottom:1rem">
+    <div class="kpi-grid section-gap" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr));margin-bottom:2rem">
       ${MetricCard(
         'Sharpe Ratio',
         metrics.Sharpe_ratio != null ? Number(metrics.Sharpe_ratio).toFixed(2) : '—',
@@ -825,49 +802,6 @@ function renderDashboard(root) {
         </div>
         <div class="kpi-delta neutral">Annualised, rolling</div>
       </div>
-      ${MetricCard(
-        'Recovery',
-        recovery.status,
-        recovery.days_since_trough + ' days since trough',
-        null,
-        recoveryVariant
-      )}
-    </div>
-
-    <!-- KPI Row 3: Trade Stats -->
-    <div class="kpi-grid section-gap" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr));margin-bottom:2rem">
-      ${MetricCard(
-        'Open Positions',
-        getOpenPositions().length
-      )}
-      ${MetricCard(
-        'Hit Rate',
-        metrics.hit_rate_pct != null ? Number(metrics.hit_rate_pct).toFixed(1) + '%' : '—',
-        getClosedTrades().length + ' closed trades',
-        null,
-        hitPos ? 'success' : 'warning'
-      )}
-      ${MetricCard(
-        'Avg Gain',
-        fmt(metrics.avg_gain_usd, 0),
-        '',
-        null,
-        'success'
-      )}
-      ${MetricCard(
-        'Avg Loss',
-        metrics.avg_loss_usd != null ? '-' + fmt(Math.abs(metrics.avg_loss_usd), 0) : '—',
-        '',
-        null,
-        'danger'
-      )}
-      ${MetricCard(
-        'Realised P&amp;L',
-        fmt(metrics.total_realised_pnl, 0),
-        '',
-        null,
-        (metrics.total_realised_pnl || 0) >= 0 ? 'success' : 'danger'
-      )}
     </div>
 
     <!-- NAV Chart -->
@@ -1099,7 +1033,7 @@ function renderDashboard(root) {
       },
       {
         key: 'name', label: 'Name / Ticker',
-        render: (val, row) => `<strong>${val}</strong><br><span style="font-size:.7rem;color:var(--color-text-muted)">${row.ticker}<\/span>`
+        render: (val, row) => `<strong>${val}<\/strong><br><span style="font-size:.7rem;color:var(--color-text-muted)">${row.ticker}<\/span>`
       },
       {
         key: 'asset_class', label: 'Class',
@@ -1147,7 +1081,6 @@ function renderDashboard(root) {
 
 // ════════════════════════════════════════════════════════════════════════════
 // SECTION 9 — OTHER PAGE STUB RENDERERS
-// (Prompts 3, 4, 5 will replace these with full implementations)
 // ════════════════════════════════════════════════════════════════════════════
 function renderPerformance(root)   { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Performance — coming in next version<\/p>'; }
 function renderRisk(root)          { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Risk — coming in next version<\/p>'; }
