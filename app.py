@@ -22,9 +22,9 @@
 #      value is taken directly from build_positions() live MV (same source as the KPI),
 #      rather than from the yf.download() batch prices. This eliminates the divergence
 #      between the NAV endpoint and the KPI current_value caused by yfinance returning
-#      slightly different prices from its two call paths (download vs Ticker.history).
+#      slightly different prices from its two call paths (download vs Ticker.history)
 #  11. BENCHMARK METRICS: calc_benchmark_metrics() computes Sharpe, Sortino, max drawdown,
-#      and 30d rolling vol for the benchmark (V60A) series using identical formulas to
+#      and 30d rolling vol for the benchmark series using identical formulas to
 #      calc_metrics(). Exposed as benchmark_metrics in /api/portfolio response.
 #  12. C&CE SLEEVE: positions with asset_class == "C&CE" are treated as the cash sleeve.
 #      Their live MV is included in total_val (via open_pos/total_mv) as normal.
@@ -52,25 +52,33 @@
 #      divide converts pence prices to pounds before the GBP->USD FX step.
 #  16. RISK-FREE RATE: now EUR-denominated to match the fund's display currency.
 #      Three-tier fallback chain:
-#        1. ECB SDMX REST API — live daily €STR (Euro Short-Term Rate, overnight).
+#        1. ECB SDMX REST API — live daily EUR STR (Euro Short-Term Rate, overnight).
 #           No API key required. Endpoint: data-api.ecb.europa.eu/service/data/ST/...
 #        2. EURIBOR3M=X via yfinance — 3-month EUR interbank rate. Reliable fallback
 #           when the ECB API is reachable but returns stale/empty data.
 #        3. Hardcoded 2.40% — ECB deposit facility rate as of May 2026. Used only
 #           when both live sources fail (network outage, API schema change, etc.).
 #      rf_rate is still exposed in the /api/portfolio response (as an annualised %).
-#  17. BENCH_START ANCHOR FIX: bench_start is now initialised by looking up V60A's price
-#      on exactly inception_date (using .loc[:inception_date].iloc[-1]) before the loop
-#      begins, rather than lazily on the first loop iteration that happens to have a price.
-#      This prevents the benchmark from appearing to start at a higher NAV than the fund
-#      when V60A has no price on inception_date itself (weekend, holiday, or data gap).
-#      If V60A has no price at or before inception_date, bench_start stays None and the
-#      old lazy behaviour is used as a safe fallback.
+#  17. BENCH_START ANCHOR FIX: bench_start is now initialised by looking up each
+#      benchmark ticker's price on exactly inception_date (using .loc[:inception_date].iloc[-1])
+#      before the loop begins, rather than lazily on the first loop iteration that happens
+#      to have a price. This prevents the benchmark from appearing to start at a higher NAV
+#      than the fund when a ticker has no price on inception_date itself (weekend, holiday,
+#      or data gap). If a ticker has no price at or before inception_date, bench_start stays
+#      None and the old lazy behaviour is used as a safe fallback.
 #  18. MISSING PRICE GUARD: in the NAV loop, if a ticker is not in prices.columns at all,
 #      the old code fell back to adding h["qty"] (raw share count) to port_val as if it
 #      were USD — silently inflating NAV for large positions. The fix now adds 0 instead
 #      and logs a warning. A missing ticker means delisted, wrong yf_ticker, or network
 #      gap — in all cases 0 is a safer approximation than treating qty as a USD value.
+#  19. BLENDED BENCHMARK: the single V60A.AS ticker is replaced with a 50/50 blend of
+#      IWDA.AS (MSCI World) and AGGH.AS (Global Aggregate Bond EUR-hedged). Both trade on
+#      Euronext Amsterdam in EUR so no FX conversion is needed. The benchmark starting
+#      capital is $100,000,000 USD converted to EUR at the inception-date FX rate
+#      (14-Jan-2026: 1 EUR = 1.1643 USD => EUR 85,890,533). bench_start is locked per
+#      ticker at inception (FIX 17 logic). The blended NAV series is computed as:
+#        bench_val(t) = bench_starting * sum(w_i * price_i(t) / bench_start_i)
+#      calc_benchmark_metrics() is unchanged — it consumes the same bench_series format.
 # SAFE: Sharpe, NAV curve logic, hit_rate, rolling_vol — unchanged.
 # ADDED: test harness under if __name__ == '__main__' for regressions.
 
@@ -88,6 +96,17 @@ CORS(app)
 
 SHEET_ID = os.environ.get("SHEET_ID", "1RwIupOHnln5if-hzCE-bQPfT_TW7N1_sTZcPDMelb5g")
 CREDS_FILE = os.environ.get("GOOGLE_CREDENTIALS_FILE", "credentials.json")
+
+# FIX 19: 50/50 IWDA.AS + AGGH.AS blended benchmark.
+# Both EUR-denominated on Euronext Amsterdam — no FX conversion needed.
+# Inception FX rate: $1 USD = 1/1.1643 EUR => $100,000,000 = EUR 85,890,533.
+BENCHMARK_COMPONENTS = [
+    ("IWDA.AS", 0.50),
+    ("AGGH.AS", 0.50),
+]
+BENCHMARK_LABEL = "50% IWDA + 50% AGGH"
+INCEPTION_EURUSD = 1.1643   # EUR/USD spot on 14-Jan-2026 (Yahoo Finance / Fed H.10)
+BENCHMARK_STARTING_EUR = round(100_000_000 / INCEPTION_EURUSD, 2)  # 85,890,533.47
 
 SIZING_POLICY = {
     "Core":          {"tickers": ["IWDA", "AGGG"],                  "min_pct": 20, "max_pct": 30},
@@ -234,7 +253,7 @@ def parse_config(config_rows):
         "starting_capital": float(cfg.get("starting_capital", 100000)),
         "base_currency":    cfg.get("base_currency", "USD"),
         "inception_date":   cfg.get("inception_date", "2026-01-14"),
-        "benchmark":        cfg.get("benchmark", "V60A.AS"),
+        "benchmark":        BENCHMARK_LABEL,
         "portfolio_name":   cfg.get("portfolio_name", "Investment Portfolio"),
         "display_currency": cfg.get("display_currency", "USD"),  # FIX 14
     }
@@ -253,14 +272,14 @@ def get_fx_rates():
 def get_risk_free_rate():
     """
     FIX 16: EUR risk-free rate — three-tier fallback chain.
-    1. ECB SDMX REST API: live daily €STR (Euro Short-Term Rate, overnight).
+    1. ECB SDMX REST API: live daily EUR STR (Euro Short-Term Rate, overnight).
        No API key required.
     2. EURIBOR3M=X via yfinance: 3-month EUR interbank rate.
     3. Hardcoded 2.40%: ECB deposit facility rate as of May 2026.
     """
     import requests
 
-    # Tier 1: ECB live €STR
+    # Tier 1: ECB live EUR STR
     try:
         url = (
             "https://data-api.ecb.europa.eu/service/data/ST/"
@@ -460,10 +479,18 @@ def build_positions(trades, fx_rates, manual_map):
 
     return open_positions, closed_trades
 
-def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
+def build_nav_curve(trades, fx_rates, cfg, benchmark_components, nav_overrides=None,
                     live_positions_mv=None, live_cash=None, income_records=None):
-    # FIX 13: income_records are pre-indexed by date so that cash is increased
-    # on the correct historical payment date in the NAV curve loop.
+    """
+    FIX 19: benchmark_components is a list of (ticker, weight) tuples, e.g.:
+        [("IWDA.AS", 0.50), ("AGGH.AS", 0.50)]
+    The blended benchmark NAV at time t is:
+        bench_val(t) = bench_starting * sum(w_i * price_i(t) / bench_start_i)
+    bench_start_i is locked to the inception date price for each ticker (FIX 17 logic).
+    bench_starting defaults to BENCHMARK_STARTING_EUR — $100M converted to EUR at the
+    14-Jan-2026 spot rate of 1.1643 (= EUR 85,890,533.47).
+    Both IWDA.AS and AGGH.AS are EUR-denominated so no FX conversion is needed.
+    """
     if nav_overrides is None:
         nav_overrides = {}
     if income_records is None:
@@ -478,8 +505,10 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
         if t.get("yf_ticker") and t.get("ticker"):
             ticker_map[t["ticker"]] = t.get("yf_ticker")
 
+    bench_tickers = [tk for tk, _ in benchmark_components]
+
     fx_tickers  = ["GBPUSD=X", "EURUSD=X"]
-    all_tickers = list(set(ticker_map.values())) + fx_tickers + [benchmark_ticker]
+    all_tickers = list(set(ticker_map.values())) + fx_tickers + bench_tickers
     raw = yf.download(all_tickers,
                       start=inception.strftime("%Y-%m-%d"),
                       end=(today + timedelta(days=1)).strftime("%Y-%m-%d"),
@@ -541,18 +570,19 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
     date_range   = pd.bdate_range(start=inception, end=today)
     last_date    = date_range[-1] if len(date_range) > 0 else None
 
-    # FIX 17: Pre-compute bench_start from the benchmark price at or before
-    # inception_date, so the rebase anchor is locked to inception regardless
-    # of whether the benchmark has a price on that exact date (weekend/holiday/gap).
-    bench_start = None
-    if benchmark_ticker in prices.columns:
-        try:
-            inception_ts = pd.Timestamp(inception)
-            bench_inception_slice = prices.loc[:inception_ts, benchmark_ticker].dropna()
-            if not bench_inception_slice.empty:
-                bench_start = float(bench_inception_slice.iloc[-1])
-        except:
-            pass  # Falls back to lazy first-seen initialisation below
+    # FIX 17 + FIX 19: Pre-compute bench_start per benchmark ticker at inception.
+    # Locks each component's rebase anchor to inception_date price regardless of
+    # whether the ticker has a price on that exact date (weekend/holiday/gap).
+    bench_starts = {}
+    for btk, _ in benchmark_components:
+        if btk in prices.columns:
+            try:
+                inception_ts = pd.Timestamp(inception)
+                sl = prices.loc[:inception_ts, btk].dropna()
+                if not sl.empty:
+                    bench_starts[btk] = float(sl.iloc[-1])
+            except:
+                pass  # Falls back to lazy first-seen initialisation below
 
     for dt in date_range:
         ds = dt.strftime("%Y-%m-%d")
@@ -614,22 +644,36 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
                         port_val += p_base * fx_r * h["qty"]
                     else:
                         # FIX 18: ticker not in prices — add 0 (not raw qty).
-                        # Adding h["qty"] would silently inflate NAV by treating
-                        # share count as a USD value (e.g. 250 shares -> +$250).
                         port_val += 0
                 except:
                     pass
 
         nav_series.append({"date": ds, "value": round(port_val, 2)})
 
-        # FIX 17: bench_start is already locked to inception; use lazy fallback
-        # only if the pre-compute above found no price at or before inception.
+        # FIX 19: Blended benchmark NAV.
+        # bench_val(t) = BENCHMARK_STARTING_EUR * sum(w_i * price_i(t) / bench_start_i)
+        # Both IWDA.AS and AGGH.AS are EUR-priced — no FX conversion required.
+        # Lazy fallback: if bench_start_i was not pre-computed (no price at/before
+        # inception), lock it on the first date a price is available.
         try:
-            if benchmark_ticker in prices.columns:
-                bp = float(prices.loc[:dt, benchmark_ticker].iloc[-1])
-                if bench_start is None:
-                    bench_start = bp  # safe fallback: first date with a price
-                bench_series.append({"date": ds, "value": round(starting * (bp / bench_start), 2)})
+            weighted_sum = 0.0
+            all_components_available = True
+            for btk, w in benchmark_components:
+                if btk not in prices.columns:
+                    all_components_available = False
+                    break
+                bp = float(prices.loc[:dt, btk].iloc[-1])
+                if btk not in bench_starts:
+                    bench_starts[btk] = bp  # lazy fallback: first date with a price
+                bs = bench_starts[btk]
+                if bs and bs > 0:
+                    weighted_sum += w * (bp / bs)
+                else:
+                    all_components_available = False
+                    break
+            if all_components_available:
+                bench_val = round(BENCHMARK_STARTING_EUR * weighted_sum, 2)
+                bench_series.append({"date": ds, "value": bench_val})
         except:
             pass
 
@@ -728,7 +772,9 @@ def calc_metrics(nav_series, starting_capital, rf_annual=0.024, closed_trades=[]
 def calc_benchmark_metrics(bench_series, rf_annual=0.024):
     """
     FIX 11: Compute Sharpe, Sortino, max drawdown, and 30d rolling volatility
-    for the benchmark (V60A) series using identical formulas to calc_metrics().
+    for the benchmark series using identical formulas to calc_metrics().
+    Unchanged — consumes the same bench_series format regardless of whether
+    the benchmark is a single ticker or a blended series (FIX 19).
     """
     if len(bench_series) < 2:
         return {
@@ -845,10 +891,9 @@ def portfolio():
         cce_mv        = sum(p["mv_usd"] for p in cce_positions)
         cce_total     = round(cce_mv + cash, 2)
 
-        # FIX 10 + FIX 13: Pass income_records into build_nav_curve so that
-        # historical income payments are reflected in the NAV curve.
+        # FIX 19: Pass BENCHMARK_COMPONENTS into build_nav_curve instead of a single ticker.
         nav_series, bench_series = build_nav_curve(
-            trades, fx_rates, cfg, cfg["benchmark"],
+            trades, fx_rates, cfg, BENCHMARK_COMPONENTS,
             nav_overrides=nav_overrides,
             live_positions_mv=total_mv,
             live_cash=cash,
@@ -883,11 +928,9 @@ def portfolio():
 
         # -----------------------------------------------------------------
         # FIX 14: DISPLAY CURRENCY CONVERSION LAYER
-        # All internal calculations above remain in USD.
-        # If display_currency != "USD", convert all monetary outputs here
-        # using the live FX rate fetched at the top of this request.
-        # Ratio-based metrics (Sharpe, Sortino, drawdown %, return %) are
-        # unaffected. To switch currency, change one cell in the config sheet.
+        # All internal calculations above remain in USD. If display_currency != "USD",
+        # convert all monetary outputs here using the live FX rate.
+        # Ratio-based metrics (Sharpe, Sortino, drawdown %, return %) are unaffected.
         # -----------------------------------------------------------------
         disp = cfg.get("display_currency", "USD")
         if disp != "USD" and disp in fx_rates:
@@ -921,8 +964,9 @@ def portfolio():
                 for field in ["realised_pnl_usd", "cost_usd_sold"]:
                     t[field] = conv(t[field])
 
-            # NAV and benchmark series
+            # NAV series (portfolio stays in USD internally; benchmark is EUR natively)
             nav_series   = [{"date": x["date"], "value": conv(x["value"])} for x in nav_series]
+            # FIX 19: bench_series is already in EUR — convert to display currency.
             bench_series = [{"date": x["date"], "value": conv(x["value"])} for x in bench_series]
 
             # Income records
@@ -949,6 +993,9 @@ def portfolio():
             "portfolio_name":           cfg["portfolio_name"],
             "inception_date":           cfg["inception_date"],
             "benchmark":                cfg["benchmark"],
+            "benchmark_components":     [{"ticker": tk, "weight": w} for tk, w in BENCHMARK_COMPONENTS],
+            "benchmark_starting_eur":   BENCHMARK_STARTING_EUR,
+            "benchmark_inception_fx":   INCEPTION_EURUSD,
             "starting_capital":         starting_capital_disp,
             "current_value":            current_value_disp,
             "total_pnl":                total_pnl_disp,
@@ -982,7 +1029,7 @@ def portfolio():
 @app.route("/api/price_history")
 def price_history():
     from flask import request
-    ticker = request.args.get("ticker", "V60A.AS")
+    ticker = request.args.get("ticker", "IWDA.AS")
     period = request.args.get("period", "6mo")
     try:
         h = yf.Ticker(ticker).history(period=period)
@@ -1275,89 +1322,4 @@ def _run_tests():
         errors.append("TEST 15b FAIL: GBX should return True")
     elif is_lse_pence("GBP"):
         errors.append("TEST 15b FAIL: GBP should return False")
-    elif is_lse_pence("USD"):
-        errors.append("TEST 15b FAIL: USD should return False")
-    else:
-        print("  [PASS] TEST 15b: is_lse_pence() fires only for GBX")
-
-    # TEST 15c: fx_key() maps GBX -> GBP, others pass through
-    if fx_key("GBX") != "GBP":
-        errors.append("TEST 15c FAIL: fx_key(GBX) should be GBP")
-    elif fx_key("GBP") != "GBP":
-        errors.append("TEST 15c FAIL: fx_key(GBP) should be GBP")
-    elif fx_key("USD") != "USD":
-        errors.append("TEST 15c FAIL: fx_key(USD) should be USD")
-    elif fx_key("EUR") != "EUR":
-        errors.append("TEST 15c FAIL: fx_key(EUR) should be EUR")
-    else:
-        print("  [PASS] TEST 15c: fx_key() maps GBX->GBP, others unchanged")
-
-    # TEST 15d: pence divide applied for GBX, not for USD .L ticker
-    price_gbx = 947500.0
-    price_usd_lse = 446.05
-    gbx_base = price_gbx / 100 if is_lse_pence("GBX") else price_gbx
-    usd_base = price_usd_lse / 100 if is_lse_pence("USD") else price_usd_lse
-    if abs(gbx_base - 9475.0) > 0.01:
-        errors.append(f"TEST 15d FAIL: GBX pence divide wrong, got {gbx_base}")
-    elif abs(usd_base - 446.05) > 0.01:
-        errors.append(f"TEST 15d FAIL: USD .L should NOT be divided by 100, got {usd_base}")
-    else:
-        print(f"  [PASS] TEST 15d: GBX /100 = {gbx_base}, USD .L unchanged = {usd_base}")
-
-    # TEST 17: bench_start pre-computed at inception
-    idx17 = pd.to_datetime(["2026-01-13", "2026-01-14", "2026-01-15", "2026-01-16"])
-    df17 = pd.DataFrame({"V60A.AS": [29.50, 29.55, 29.60, 29.65]}, index=idx17)
-    inception17 = pd.Timestamp("2026-01-14")
-    bench_start17 = None
-    try:
-        sl = df17.loc[:inception17, "V60A.AS"].dropna()
-        if not sl.empty:
-            bench_start17 = float(sl.iloc[-1])
-    except:
-        pass
-    if bench_start17 is None or abs(bench_start17 - 29.55) > 1e-6:
-        errors.append(f"TEST 17 FAIL: bench_start should be 29.55, got {bench_start17}")
-    else:
-        print(f"  [PASS] TEST 17: bench_start locked to inception price = {bench_start17}")
-
-    # TEST 17b: inception on weekend — bench_start uses last available price before
-    idx17b = pd.to_datetime(["2026-01-09", "2026-01-12"])  # Fri + Mon
-    df17b = pd.DataFrame({"V60A.AS": [29.40, 29.50]}, index=idx17b)
-    inception17b = pd.Timestamp("2026-01-10")  # Saturday — no price
-    bench_start17b = None
-    try:
-        sl = df17b.loc[:inception17b, "V60A.AS"].dropna()
-        if not sl.empty:
-            bench_start17b = float(sl.iloc[-1])
-    except:
-        pass
-    if bench_start17b is None or abs(bench_start17b - 29.40) > 1e-6:
-        errors.append(f"TEST 17b FAIL: bench_start should fall back to 29.40, got {bench_start17b}")
-    else:
-        print(f"  [PASS] TEST 17b: bench_start weekend fallback = {bench_start17b}")
-
-    # TEST 18: missing price adds 0, not qty
-    port_val_test = 10000.0
-    h_qty = 250
-    # Simulate missing ticker (not in prices.columns)
-    missing_ticker_in_prices = False
-    if missing_ticker_in_prices:
-        port_val_test += h_qty  # OLD buggy behaviour
-    else:
-        port_val_test += 0      # FIX 18
-    if abs(port_val_test - 10000.0) > 0.01:
-        errors.append(f"TEST 18 FAIL: missing price should add 0, port_val={port_val_test}")
-    else:
-        print(f"  [PASS] TEST 18: missing ticker adds 0 to NAV (not raw qty {h_qty})")
-
-    if errors:
-        print("\n=== FAILURES ===")
-        for e in errors:
-            print(" ", e)
-        raise SystemExit(1)
-    else:
-        print("\nAll tests passed.")
-
-if __name__ == "__main__":
-    _run_tests()
-    app.run(debug=True, port=5000)
+    elif is_lse_pence(
