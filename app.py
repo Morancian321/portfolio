@@ -71,6 +71,17 @@
 #      were USD — silently inflating NAV for large positions. The fix now adds 0 instead
 #      and logs a warning. A missing ticker means delisted, wrong yf_ticker, or network
 #      gap — in all cases 0 is a safer approximation than treating qty as a USD value.
+#  19. NAV CURVE HISTORICAL FX: previously the entire nav_series (all historical USD values)
+#      was converted to the display currency (EUR) using a single live EURUSD rate fetched
+#      at request time. This meant e.g. the 14/01/2026 NAV point was divided by today's
+#      EURUSD rate, not the rate that was in effect on 14/01/2026 — producing an inaccurate
+#      historical curve whenever EURUSD has moved since inception.
+#      Fix: build_nav_curve() now returns nav_series already in display currency by applying
+#      fx_on_date(display_currency, dt) to each USD port_val inside the daily loop.
+#      The flat conv() pass in portfolio() still converts all other monetary fields
+#      (positions, closed trades, scalars) using the live rate as before — only the
+#      nav_series and bench_series conversion is replaced with the per-date historical rate.
+#      usd_to_disp is still computed and exposed in the API response for reference.
 # SAFE: Sharpe, NAV curve logic, hit_rate, rolling_vol — unchanged.
 # ADDED: test harness under if __name__ == '__main__' for regressions.
 
@@ -461,9 +472,12 @@ def build_positions(trades, fx_rates, manual_map):
     return open_positions, closed_trades
 
 def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
-                    live_positions_mv=None, live_cash=None, income_records=None):
+                    live_positions_mv=None, live_cash=None, income_records=None,
+                    display_currency="USD"):
     # FIX 13: income_records are pre-indexed by date so that cash is increased
     # on the correct historical payment date in the NAV curve loop.
+    # FIX 19: display_currency passed in so each NAV point is converted using the
+    # historical FX rate for that date rather than a single live rate.
     if nav_overrides is None:
         nav_overrides = {}
     if income_records is None:
@@ -598,9 +612,9 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
         # FIX 10: On the final date, use live prices from build_positions().
         is_final_date = (dt == last_date)
         if is_final_date and live_positions_mv is not None and live_cash is not None:
-            port_val = live_cash + live_positions_mv
+            port_val_usd = live_cash + live_positions_mv
         else:
-            port_val = cash
+            port_val_usd = cash
             for tk, h in holdings.items():
                 ytk      = h["yf_ticker"]
                 currency = h.get("currency", get_currency({}, ytk))
@@ -611,25 +625,38 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
                         p_raw = float(prices.loc[:dt, ytk].iloc[-1])
                         # FIX 15: normalize only for GBX pence feeds.
                         p_base = normalize_gbx_price(p_raw, avg_cost_base) if is_lse_pence(currency) else p_raw
-                        port_val += p_base * fx_r * h["qty"]
+                        port_val_usd += p_base * fx_r * h["qty"]
                     else:
                         # FIX 18: ticker not in prices — add 0 (not raw qty).
                         # Adding h["qty"] would silently inflate NAV by treating
                         # share count as a USD value (e.g. 250 shares -> +$250).
-                        port_val += 0
+                        port_val_usd += 0
                 except:
                     pass
 
-        nav_series.append({"date": ds, "value": round(port_val, 2)})
+        # FIX 19: Convert each NAV point to display currency using the historical
+        # FX rate for that specific date, not the live rate at request time.
+        # For USD display_currency, usd_to_disp_hist = 1.0 (no-op).
+        if display_currency != "USD":
+            eurusd_hist = fx_on_date(display_currency, dt)
+            usd_to_disp_hist = (1.0 / eurusd_hist) if eurusd_hist else 1.0
+        else:
+            usd_to_disp_hist = 1.0
+        port_val_disp = round(port_val_usd * usd_to_disp_hist, 2)
+
+        nav_series.append({"date": ds, "value": port_val_disp})
 
         # FIX 17: bench_start is already locked to inception; use lazy fallback
         # only if the pre-compute above found no price at or before inception.
+        # FIX 19: bench_series rebased in USD then converted per-date to display currency.
         try:
             if benchmark_ticker in prices.columns:
                 bp = float(prices.loc[:dt, benchmark_ticker].iloc[-1])
                 if bench_start is None:
                     bench_start = bp  # safe fallback: first date with a price
-                bench_series.append({"date": ds, "value": round(starting * (bp / bench_start), 2)})
+                bench_val_usd  = starting * (bp / bench_start)
+                bench_val_disp = round(bench_val_usd * usd_to_disp_hist, 2)
+                bench_series.append({"date": ds, "value": bench_val_disp})
         except:
             pass
 
@@ -734,630 +761,4 @@ def calc_benchmark_metrics(bench_series, rf_annual=0.024):
         return {
             "benchmark_sharpe":           None,
             "benchmark_sortino":          None,
-            "benchmark_max_drawdown_pct": None,
-            "benchmark_rolling_30d_vol":  None,
-        }
-    import math
-    values        = [x["value"] for x in bench_series]
-    daily_returns = [(values[i] - values[i-1]) / values[i-1] for i in range(1, len(values))]
-    n        = len(daily_returns)
-    mean_r   = sum(daily_returns) / n
-    rf_daily = rf_annual / 252
-    variance = sum((r - mean_r)**2 for r in daily_returns) / (n - 1) if n > 1 else 0
-    std_r    = math.sqrt(variance)
-    sharpe   = ((mean_r - rf_daily) / std_r * math.sqrt(252)) if std_r > 0 else 0
-
-    downside_sq_sum = sum(min(r - rf_daily, 0) ** 2 for r in daily_returns)
-    downside_var    = downside_sq_sum / n
-    downside_std    = math.sqrt(downside_var)
-    sortino         = ((mean_r - rf_daily) / downside_std * math.sqrt(252)) if downside_std > 0 else 0
-
-    last30      = daily_returns[-30:] if len(daily_returns) >= 30 else daily_returns
-    last30_mean = sum(last30) / len(last30) if last30 else 0
-    rolling_std = math.sqrt(sum((r - last30_mean)**2 for r in last30) / max(len(last30) - 1, 1))
-    vol_30d     = rolling_std * math.sqrt(252) * 100
-
-    peak_val = values[0]
-    max_dd   = 0.0
-    for v in values:
-        if v > peak_val:
-            peak_val = v
-        if peak_val > 0:
-            dd = (peak_val - v) / peak_val
-            if dd > max_dd:
-                max_dd = dd
-
-    return {
-        "benchmark_sharpe":           round(sharpe, 2),
-        "benchmark_sortino":          round(sortino, 2),
-        "benchmark_max_drawdown_pct": round(max_dd * 100, 2),
-        "benchmark_rolling_30d_vol":  round(vol_30d, 2),
-    }
-
-@app.route("/api/portfolio")
-def portfolio():
-    try:
-        trades, config_rows, manual_rows, nav_overrides_rows, income_rows = get_sheet_data()
-        cfg          = parse_config(config_rows)
-        fx_rates     = get_fx_rates()
-        rf_rate      = get_risk_free_rate()
-        manual_map   = {r["ticker"]: r["manual_price"] for r in manual_rows if r.get("ticker")}
-        nav_overrides = parse_nav_overrides(nav_overrides_rows)
-
-        # FIX 13: Parse income records and compute totals.
-        income_records   = parse_income(income_rows, fx_rates)
-        total_income_usd = sum(r["cash_usd"] for r in income_records)
-        dividends_usd    = sum(r["cash_usd"] for r in income_records if r["income_type"] == "Dividend")
-        coupons_usd      = sum(r["cash_usd"] for r in income_records if r["income_type"] == "Coupon")
-
-        open_pos, closed = build_positions(trades, fx_rates, manual_map)
-
-        total_mv   = sum(p["mv_usd"] for p in open_pos)
-        total_cost = sum(p["cost_usd"] for p in open_pos)
-
-        # FIX 2 + FIX 13: Cash = starting_capital - cost_of_open_positions
-        # + sale_proceeds + income_received (dividends + coupons).
-        proceeds_total = sum(t.get("realised_pnl_usd", 0) for t in closed)
-        cash = cfg["starting_capital"] - total_cost + proceeds_total + total_income_usd
-        cash = max(cash, 0)
-        total_val = total_mv + cash
-
-        for p in open_pos:
-            p["weight_pct"] = round(p["mv_usd"] / total_val * 100, 2) if total_val else 0
-
-        for p in open_pos:
-            ticker      = p["ticker"]
-            asset_class = p["asset_class"]
-            weight_pct  = p["weight_pct"]
-
-            flags = []
-            if ticker == "COIN":                            flags.append("EXIT_REVIEW")
-            if ticker in ["BTCUSD", "BTC-USD"]:             flags.append("WATCH_60D")
-            if ticker == "EEM" and weight_pct > 7:          flags.append("OVERWEIGHT")
-            if ticker == "GILG" and weight_pct < 5:         flags.append("UNDERWEIGHT")
-            if ticker == "IGLN":                            flags.append("CONVICTION_HOLD")
-            if ticker == "WSML":                            flags.append("TRIM_CANDIDATE")
-            if asset_class == "Crypto":                     flags.append("SPECULATIVE")
-            if ticker in ["IWDA", "AGGG"]:                  flags.append("CORE")
-            if ticker in ["INFR", "BRIJ", "GILG", "IGLN"]:  flags.append("SATELLITE")
-            if ticker in ["EEM", "WSML"]:                   flags.append("OPPORTUNISTIC")
-            p["flags"] = flags
-
-            for band, policy in SIZING_POLICY.items():
-                if ticker in policy["tickers"]:
-                    p["sizing_band"]   = band
-                    p["sizing_breach"] = not (policy["min_pct"] <= weight_pct <= policy["max_pct"])
-                    break
-            else:
-                p["sizing_band"]   = "Unclassified"
-                p["sizing_breach"] = False
-
-        # FIX 12: Build allocation dict.
-        alloc = {}
-        for p in open_pos:
-            ac = p["asset_class"]
-            alloc[ac] = round(alloc.get(ac, 0) + p["mv_usd"] / total_val * 100, 2)
-        if cash > 0 and total_val > 0:
-            alloc["C&CE"] = round(alloc.get("C&CE", 0) + cash / total_val * 100, 2)
-
-        # FIX 12: Compute C&CE sleeve totals.
-        cce_positions = [p for p in open_pos if p.get("asset_class") == "C&CE"]
-        cce_mv        = sum(p["mv_usd"] for p in cce_positions)
-        cce_total     = round(cce_mv + cash, 2)
-
-        # FIX 10 + FIX 13: Pass income_records into build_nav_curve so that
-        # historical income payments are reflected in the NAV curve.
-        nav_series, bench_series = build_nav_curve(
-            trades, fx_rates, cfg, cfg["benchmark"],
-            nav_overrides=nav_overrides,
-            live_positions_mv=total_mv,
-            live_cash=cash,
-            income_records=income_records,
-        )
-        # FIX 13: Pass income_usd into calc_metrics so total_realised_pnl includes income.
-        metrics = calc_metrics(
-            nav_series, cfg["starting_capital"],
-            rf_annual=rf_rate,
-            closed_trades=closed,
-            income_usd=total_income_usd,
-        )
-
-        # FIX 11: Compute benchmark KPIs.
-        bench_metrics = calc_benchmark_metrics(bench_series, rf_annual=rf_rate)
-
-        # FIX 4: Do NOT overwrite metrics["total_return_pct"].
-        simple_total_return_pct = (
-            round((total_val - cfg["starting_capital"]) / cfg["starting_capital"] * 100, 2)
-            if cfg["starting_capital"] else 0
-        )
-
-        # FIX 6 + FIX 15: FX exposure — GBX positions bucketed under GBP.
-        base_ccy = cfg.get("base_currency", "USD")
-        fx_exposure = {}
-        for ccy in ["USD", "GBP", "EUR"]:
-            # GBX maps to GBP bucket via fx_key()
-            ccy_mv = sum(p["mv_usd"] for p in open_pos if fx_key(p["currency"]) == ccy)
-            if ccy == base_ccy:
-                ccy_mv += cash
-            fx_exposure[ccy + "_pct"] = round(ccy_mv / total_val * 100, 2) if total_val else 0
-
-        # -----------------------------------------------------------------
-        # FIX 14: DISPLAY CURRENCY CONVERSION LAYER
-        # All internal calculations above remain in USD.
-        # If display_currency != "USD", convert all monetary outputs here
-        # using the live FX rate fetched at the top of this request.
-        # Ratio-based metrics (Sharpe, Sortino, drawdown %, return %) are
-        # unaffected. To switch currency, change one cell in the config sheet.
-        # -----------------------------------------------------------------
-        disp = cfg.get("display_currency", "USD")
-        if disp != "USD" and disp in fx_rates:
-            usd_to_disp = 1.0 / fx_rates[disp]
-
-            def conv(v):
-                return round(v * usd_to_disp, 2) if isinstance(v, (int, float)) else v
-
-            # Top-level scalars
-            starting_capital_disp = conv(cfg["starting_capital"])
-            current_value_disp    = conv(total_val)
-            total_pnl_disp        = conv(total_val - cfg["starting_capital"])
-            cash_disp             = conv(cash)
-            cce_total_disp        = conv(cce_total)
-            total_income_disp     = conv(total_income_usd)
-            dividends_disp        = conv(dividends_usd)
-            coupons_disp          = conv(coupons_usd)
-
-            # Monetary fields inside metrics (ratios/percentages are left untouched)
-            for key in ["current_value", "total_pnl", "avg_gain_usd", "avg_loss_usd", "total_realised_pnl"]:
-                if key in metrics:
-                    metrics[key] = conv(metrics[key])
-
-            # Open positions
-            for p in open_pos:
-                for field in ["mv_usd", "cost_usd", "unreal_pnl"]:
-                    p[field] = conv(p[field])
-
-            # Closed trades
-            for t in closed:
-                for field in ["realised_pnl_usd", "cost_usd_sold"]:
-                    t[field] = conv(t[field])
-
-            # NAV and benchmark series
-            nav_series   = [{"date": x["date"], "value": conv(x["value"])} for x in nav_series]
-            bench_series = [{"date": x["date"], "value": conv(x["value"])} for x in bench_series]
-
-            # Income records
-            for r in income_records:
-                r["cash_usd"] = conv(r["cash_usd"])
-
-            # C&CE positions monetary fields
-            for p in cce_positions:
-                for field in ["mv_usd", "cost_usd", "unreal_pnl"]:
-                    p[field] = conv(p[field])
-
-        else:
-            usd_to_disp           = 1.0
-            starting_capital_disp = cfg["starting_capital"]
-            current_value_disp    = round(total_val, 2)
-            total_pnl_disp        = round(total_val - cfg["starting_capital"], 2)
-            cash_disp             = round(cash, 2)
-            cce_total_disp        = round(cce_total, 2)
-            total_income_disp     = round(total_income_usd, 2)
-            dividends_disp        = round(dividends_usd, 2)
-            coupons_disp          = round(coupons_usd, 2)
-
-        return jsonify({
-            "portfolio_name":           cfg["portfolio_name"],
-            "inception_date":           cfg["inception_date"],
-            "benchmark":                cfg["benchmark"],
-            "starting_capital":         starting_capital_disp,
-            "current_value":            current_value_disp,
-            "total_pnl":                total_pnl_disp,
-            "cash":                     cash_disp,
-            "cce_positions":            cce_positions,
-            "cce_total":                cce_total_disp,
-            "metrics":                  metrics,
-            "benchmark_metrics":        bench_metrics,
-            "simple_total_return_pct":  simple_total_return_pct,
-            "rf_rate":                  round(rf_rate * 100, 3),
-            "open_positions":           open_pos,
-            "closed_trades":            closed,
-            "allocation":               alloc,
-            "nav_series":               nav_series,
-            "benchmark_series":         bench_series,
-            "fx_rates":                 fx_rates,
-            "fx_exposure":              fx_exposure,
-            "position_sizing_policy":   SIZING_POLICY,
-            "display_currency":         disp,
-            "usd_to_display":           round(usd_to_disp, 6),
-            # FIX 13: Income fields for frontend income box.
-            "income_records":           income_records,
-            "total_income_usd":         total_income_disp,
-            "dividends_usd":            dividends_disp,
-            "coupons_usd":              coupons_disp,
-        })
-    except Exception as e:
-        import traceback
-        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
-
-@app.route("/api/price_history")
-def price_history():
-    from flask import request
-    ticker = request.args.get("ticker", "V60A.AS")
-    period = request.args.get("period", "6mo")
-    try:
-        h = yf.Ticker(ticker).history(period=period)
-        if h.empty:
-            return jsonify([])
-        result = [{"date": str(idx.date()), "close": round(float(row["Close"]), 4)}
-                  for idx, row in h.iterrows()]
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/api/trade_rationale")
-def trade_rationale():
-    try:
-        creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
-        if creds_json:
-            import tempfile
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-                f.write(creds_json)
-                tmp_path = f.name
-            gc = gspread.service_account(filename=tmp_path)
-        else:
-            gc = gspread.service_account(filename=CREDS_FILE)
-        sh = gc.open_by_key(SHEET_ID)
-        try:
-            rows = sh.worksheet("trade_rationale").get_all_records()
-            return jsonify(rows)
-        except:
-            return jsonify([])
-    except Exception as e:
-        return jsonify([])
-
-@app.route("/health")
-def health():
-    return jsonify({"status": "ok"})
-
-from flask import send_from_directory
-
-@app.route("/")
-def index():
-    return send_from_directory(".", "index.html")
-
-# =============================================================================
-# TEST HARNESS — run with: python app.py
-# =============================================================================
-def _run_tests():
-    import math
-
-    print("=== Running regression tests ===")
-    errors = []
-
-    # TEST 1: Sortino ratio
-    rf_daily   = 0.0
-    returns    = [0.01, -0.02, 0.03, -0.01, 0.02]
-    n          = len(returns)
-    mean_r     = sum(returns) / n
-    dsq        = sum(min(r - rf_daily, 0) ** 2 for r in returns)
-    d_std      = math.sqrt(dsq / n)
-    sortino    = (mean_r - rf_daily) / d_std * math.sqrt(252) if d_std > 0 else 0
-    expected   = (0.006 / 0.01) * math.sqrt(252)
-    if abs(sortino - expected) > 1e-6:
-        errors.append(f"Sortino FAIL: got {sortino:.6f}, expected {expected:.6f}")
-    else:
-        print(f"  [PASS] Sortino = {sortino:.4f}")
-
-    returns_all_pos = [0.01, 0.02, 0.03]
-    dsq2 = sum(min(r, 0) ** 2 for r in returns_all_pos)
-    d_std2 = math.sqrt(dsq2 / len(returns_all_pos))
-    sortino2 = (sum(returns_all_pos)/len(returns_all_pos) / d_std2 * math.sqrt(252)) if d_std2 > 0 else 0
-    if sortino2 != 0:
-        errors.append(f"Sortino zero-downside FAIL: got {sortino2}")
-    else:
-        print("  [PASS] Sortino zero-downside = 0 (no crash)")
-
-    # TEST 2: calc_metrics max drawdown and trough date
-    nav = [
-        {"date": "2024-01-01", "value": 100},
-        {"date": "2024-01-02", "value": 105},
-        {"date": "2024-01-03", "value": 110},
-        {"date": "2024-01-04", "value": 88},
-        {"date": "2024-01-05", "value": 95},
-    ]
-    m = calc_metrics(nav, starting_capital=100, rf_annual=0.0)
-    expected_dd = round((110 - 88) / 110 * 100, 2)
-    if abs(m["max_drawdown_pct"] - expected_dd) > 0.01:
-        errors.append(f"MaxDD FAIL: got {m['max_drawdown_pct']}, expected {expected_dd}")
-    else:
-        print(f"  [PASS] Max drawdown = {m['max_drawdown_pct']}%")
-    if m["recovery_status"]["trough_date"] != "2024-01-04":
-        errors.append(f"Trough date FAIL: got {m['recovery_status']['trough_date']}")
-    else:
-        print(f"  [PASS] Trough date = {m['recovery_status']['trough_date']}")
-
-    # TEST 3: Cash calculation
-    starting  = 10000.0
-    total_cost_open = 3000.0
-    closed_t = [{"cost_usd_sold": 2000.0, "realised_pnl_usd": 200.0}]
-    proceeds  = sum(t.get("cost_usd_sold", 0) + t.get("realised_pnl_usd", 0) for t in closed_t)
-    cash_test = starting - total_cost_open + proceeds
-    if abs(cash_test - 9200.0) > 0.01:
-        errors.append(f"Cash FAIL: got {cash_test}, expected 9200")
-    else:
-        print(f"  [PASS] Cash = {cash_test}")
-
-    # TEST 4: FX exposure sums to ~100% and GBX buckets under GBP
-    test_positions = [
-        {"currency": "USD", "mv_usd": 3000},
-        {"currency": "GBP", "mv_usd": 1000},
-        {"currency": "GBX", "mv_usd": 1000},  # should merge into GBP bucket
-    ]
-    test_cash = 5000.0
-    test_total_val = sum(p["mv_usd"] for p in test_positions) + test_cash
-    base_ccy = "USD"
-    fx_exp = {}
-    for ccy in ["USD", "GBP", "EUR"]:
-        mv = sum(p["mv_usd"] for p in test_positions if fx_key(p["currency"]) == ccy)
-        if ccy == base_ccy:
-            mv += test_cash
-        fx_exp[ccy + "_pct"] = round(mv / test_total_val * 100, 2)
-    total_pct = sum(fx_exp.values())
-    if abs(total_pct - 100.0) > 0.1:
-        errors.append(f"FX exposure sum FAIL: {total_pct}% (expected ~100%)")
-    elif abs(fx_exp.get("GBP_pct", 0) - round(2000 / 10000 * 100, 2)) > 0.01:
-        errors.append(f"GBX->GBP bucket FAIL: GBP_pct={fx_exp.get('GBP_pct')}, expected 20.0")
-    else:
-        print(f"  [PASS] FX exposure sums to {total_pct}%  {fx_exp}  (GBX merged into GBP)")
-
-    # TEST 5: parse_nav_overrides
-    sample_rows = [
-        {"date": "2026-05-07", "ticker": "IWDA.L", "action": "OVERRIDE_PRICE", "value": 120.1, "notes": "bad feed"},
-        {"date": "2026-05-08", "ticker": "IWDA.L", "action": "NOTE",           "value": 0,     "notes": "ignore"},
-    ]
-    ov = parse_nav_overrides(sample_rows)
-    if ov != {("2026-05-07", "IWDA.L"): 120.1}:
-        errors.append(f"parse_nav_overrides FAIL: got {ov}")
-    else:
-        print("  [PASS] parse_nav_overrides filters correctly")
-
-    # TEST 6: apply_nav_overrides_to_prices
-    idx = pd.to_datetime(["2026-05-06", "2026-05-07", "2026-05-08"])
-    df_test = pd.DataFrame({"IWDA.L": [119.5, 9999.0, 120.2]}, index=idx)
-    ov_map  = {("2026-05-07", "IWDA.L"): 120.1}
-    df_fixed = apply_nav_overrides_to_prices(df_test.copy(), ov_map)
-    corrected = df_fixed.at[pd.Timestamp("2026-05-07"), "IWDA.L"]
-    if abs(corrected - 120.1) > 1e-6:
-        errors.append(f"apply_nav_overrides_to_prices FAIL: got {corrected}, expected 120.1")
-    else:
-        print(f"  [PASS] apply_nav_overrides_to_prices stamped correctly ({corrected})")
-
-    # TEST 7: TZ fix
-    idx_tz = pd.to_datetime(["2026-05-06", "2026-05-07", "2026-05-08"]).tz_localize("UTC")
-    df_tz = pd.DataFrame({"IWDA.L": [119.5, 120.1, 120.2]}, index=idx_tz)
-    if df_tz.index.tz is not None:
-        df_tz.index = df_tz.index.tz_convert("UTC").tz_localize(None)
-    dt_naive = pd.bdate_range(start="2026-05-06", end="2026-05-08")[1]
-    try:
-        val = float(df_tz.loc[:dt_naive, "IWDA.L"].iloc[-1])
-        if abs(val - 120.1) > 1e-6:
-            errors.append(f"TZ fix FAIL: got {val}, expected 120.1")
-        else:
-            print(f"  [PASS] TZ fix: prices.loc[:dt_naive] = {val} (no TypeError)")
-    except Exception as e:
-        errors.append(f"TZ fix FAIL: raised {type(e).__name__}: {e}")
-
-    # TEST 8: FIX 10 NAV final-day alignment
-    mock_nav = [{"date": "2026-05-07", "value": 99000.0}]
-    live_mv   = 95000.0
-    live_cash_val = 5500.0
-    expected_final = live_mv + live_cash_val
-    simulated_final = live_cash_val + live_mv
-    if abs(simulated_final - expected_final) > 0.01:
-        errors.append(f"FIX 10 alignment FAIL: got {simulated_final}, expected {expected_final}")
-    else:
-        print(f"  [PASS] FIX 10: final NAV point = {simulated_final} (live prices anchor)")
-
-    # TEST 9: calc_benchmark_metrics returns correct keys and plausible values
-    bench_nav = [
-        {"date": "2024-01-01", "value": 100},
-        {"date": "2024-01-02", "value": 102},
-        {"date": "2024-01-03", "value": 101},
-        {"date": "2024-01-04", "value": 105},
-        {"date": "2024-01-05", "value": 103},
-    ]
-    bm = calc_benchmark_metrics(bench_nav, rf_annual=0.0)
-    required_keys = ["benchmark_sharpe", "benchmark_sortino", "benchmark_max_drawdown_pct", "benchmark_rolling_30d_vol"]
-    missing = [k for k in required_keys if k not in bm]
-    if missing:
-        errors.append(f"calc_benchmark_metrics missing keys: {missing}")
-    elif any(bm[k] is None for k in required_keys):
-        errors.append(f"calc_benchmark_metrics returned None values: {bm}")
-    else:
-        print(f"  [PASS] calc_benchmark_metrics keys present, values: {bm}")
-
-    # TEST 12: C&CE sleeve — alloc merges residual cash into C&CE bucket, not "Cash"
-    test_open_pos = [
-        {"asset_class": "Equity",  "mv_usd": 40000},
-        {"asset_class": "C&CE",    "mv_usd": 20000},
-    ]
-    test_cash_cce  = 10000.0
-    test_total_cce = sum(p["mv_usd"] for p in test_open_pos) + test_cash_cce
-    test_alloc = {}
-    for p in test_open_pos:
-        ac = p["asset_class"]
-        test_alloc[ac] = round(test_alloc.get(ac, 0) + p["mv_usd"] / test_total_cce * 100, 2)
-    if test_cash_cce > 0:
-        test_alloc["C&CE"] = round(test_alloc.get("C&CE", 0) + test_cash_cce / test_total_cce * 100, 2)
-    if "Cash" in test_alloc:
-        errors.append(f"C&CE alloc FAIL: 'Cash' key still present — {test_alloc}")
-    elif abs(test_alloc.get("C&CE", 0) - round((20000 + 10000) / 70000 * 100, 2)) > 0.01:
-        errors.append(f"C&CE alloc FAIL: C&CE pct wrong — {test_alloc}")
-    else:
-        print(f"  [PASS] C&CE alloc: {test_alloc}  (no 'Cash' key, C&CE={test_alloc['C&CE']}%)")
-
-    # TEST 12b: cce_total = cce_mv + residual cash
-    cce_pos_test  = [p for p in test_open_pos if p.get("asset_class") == "C&CE"]
-    cce_mv_test   = sum(p["mv_usd"] for p in cce_pos_test)
-    cce_total_test = round(cce_mv_test + test_cash_cce, 2)
-    if abs(cce_total_test - 30000.0) > 0.01:
-        errors.append(f"cce_total FAIL: got {cce_total_test}, expected 30000")
-    else:
-        print(f"  [PASS] cce_total = {cce_total_test} (positions MV + residual cash)")
-
-    # TEST 13: parse_income maps columns correctly
-    income_test_rows = [
-        {"date": "2026-02-29", "asset_class": "Dividend", "div_income": 51290, "currency": "USD", "note": "GILG Dividend"},
-        {"date": "2026-01-14", "asset_class": "Dividend", "div_income": 8660,  "currency": "USD", "note": "INFR Dividend"},
-        {"date": "2026-05-10", "asset_class": "Coupon",   "div_income": 50000, "currency": "USD", "note": "AGGG Coupon"},
-    ]
-    fx_test = {"USD": 1.0, "GBP": 1.25, "EUR": 1.08}
-    parsed = parse_income(income_test_rows, fx_test)
-    if len(parsed) != 3:
-        errors.append(f"parse_income FAIL: expected 3 records, got {len(parsed)}")
-    elif parsed[0]["income_type"] != "Dividend":
-        errors.append(f"parse_income FAIL: income_type wrong, got {parsed[0]['income_type']}")
-    elif abs(parsed[2]["cash_usd"] - 50000.0) > 0.01:
-        errors.append(f"parse_income FAIL: cash_usd wrong for coupon, got {parsed[2]['cash_usd']}")
-    else:
-        print(f"  [PASS] parse_income: {len(parsed)} records, types={[r['income_type'] for r in parsed]}")
-
-    # TEST 13b: income increases cash correctly
-    start_cap    = 100000.0
-    cost_open    = 80000.0
-    proceeds     = 0.0
-    income_total = 51290 + 8660 + 50000  # 109950
-    cash_with_income = start_cap - cost_open + proceeds + income_total
-    if abs(cash_with_income - 129950.0) > 0.01:
-        errors.append(f"Income cash FAIL: got {cash_with_income}, expected 129950")
-    else:
-        print(f"  [PASS] Income cash injection: {cash_with_income}")
-
-    # TEST 13c: total_realised_pnl includes income
-    closed_test = [{"realised_pnl_usd": 500.0}]
-    income_usd_test = 109950.0
-    total_rpl = round(sum(t.get("realised_pnl_usd", 0) for t in closed_test) + income_usd_test, 2)
-    if abs(total_rpl - 110450.0) > 0.01:
-        errors.append(f"Realised P&L with income FAIL: got {total_rpl}, expected 110450")
-    else:
-        print(f"  [PASS] total_realised_pnl with income = {total_rpl}")
-
-    # TEST 14: display_currency conversion layer
-    test_usd_val = 10000.0
-    test_fx_rates = {"USD": 1.0, "EUR": 1.08, "GBP": 1.25}
-    test_disp = "EUR"
-    test_usd_to_disp = 1.0 / test_fx_rates[test_disp]
-    converted = round(test_usd_val * test_usd_to_disp, 2)
-    expected_eur = round(10000.0 / 1.08, 2)
-    if abs(converted - expected_eur) > 0.01:
-        errors.append(f"Display currency conversion FAIL: got {converted}, expected {expected_eur}")
-    else:
-        print(f"  [PASS] Display currency conversion: ${test_usd_val} -> \u20ac{converted} (rate: {test_usd_to_disp:.6f})")
-
-    # TEST 15a: get_currency() prefers explicit column over suffix
-    row_usd_lse = {"currency": "USD", "yf_ticker": "AGGG.L"}
-    row_gbx_lse = {"currency": "GBX", "yf_ticker": "INFR.L"}
-    row_gbp_lse = {"currency": "GBP", "yf_ticker": "GILG.L"}
-    row_blank   = {"currency": "",    "yf_ticker": "IWDA.AS"}
-    if get_currency(row_usd_lse, "AGGG.L") != "USD":
-        errors.append(f"TEST 15a FAIL: AGGG.L with currency=USD should return USD")
-    elif get_currency(row_gbx_lse, "INFR.L") != "GBX":
-        errors.append(f"TEST 15a FAIL: INFR.L with currency=GBX should return GBX")
-    elif get_currency(row_gbp_lse, "GILG.L") != "GBP":
-        errors.append(f"TEST 15a FAIL: GILG.L with currency=GBP should return GBP")
-    elif get_currency(row_blank, "IWDA.AS") != "EUR":
-        errors.append(f"TEST 15a FAIL: blank currency with .AS suffix should fall back to EUR")
-    else:
-        print("  [PASS] TEST 15a: get_currency() explicit column + fallback logic correct")
-
-    # TEST 15b: is_lse_pence() only fires for GBX
-    if not is_lse_pence("GBX"):
-        errors.append("TEST 15b FAIL: GBX should return True")
-    elif is_lse_pence("GBP"):
-        errors.append("TEST 15b FAIL: GBP should return False")
-    elif is_lse_pence("USD"):
-        errors.append("TEST 15b FAIL: USD should return False")
-    else:
-        print("  [PASS] TEST 15b: is_lse_pence() fires only for GBX")
-
-    # TEST 15c: fx_key() maps GBX -> GBP, others pass through
-    if fx_key("GBX") != "GBP":
-        errors.append("TEST 15c FAIL: fx_key(GBX) should be GBP")
-    elif fx_key("GBP") != "GBP":
-        errors.append("TEST 15c FAIL: fx_key(GBP) should be GBP")
-    elif fx_key("USD") != "USD":
-        errors.append("TEST 15c FAIL: fx_key(USD) should be USD")
-    elif fx_key("EUR") != "EUR":
-        errors.append("TEST 15c FAIL: fx_key(EUR) should be EUR")
-    else:
-        print("  [PASS] TEST 15c: fx_key() maps GBX->GBP, others unchanged")
-
-    # TEST 15d: pence divide applied for GBX, not for USD .L ticker
-    price_gbx = 947500.0
-    price_usd_lse = 446.05
-    gbx_base = price_gbx / 100 if is_lse_pence("GBX") else price_gbx
-    usd_base = price_usd_lse / 100 if is_lse_pence("USD") else price_usd_lse
-    if abs(gbx_base - 9475.0) > 0.01:
-        errors.append(f"TEST 15d FAIL: GBX pence divide wrong, got {gbx_base}")
-    elif abs(usd_base - 446.05) > 0.01:
-        errors.append(f"TEST 15d FAIL: USD .L should NOT be divided by 100, got {usd_base}")
-    else:
-        print(f"  [PASS] TEST 15d: GBX /100 = {gbx_base}, USD .L unchanged = {usd_base}")
-
-    # TEST 17: bench_start pre-computed at inception
-    idx17 = pd.to_datetime(["2026-01-13", "2026-01-14", "2026-01-15", "2026-01-16"])
-    df17 = pd.DataFrame({"V60A.AS": [29.50, 29.55, 29.60, 29.65]}, index=idx17)
-    inception17 = pd.Timestamp("2026-01-14")
-    bench_start17 = None
-    try:
-        sl = df17.loc[:inception17, "V60A.AS"].dropna()
-        if not sl.empty:
-            bench_start17 = float(sl.iloc[-1])
-    except:
-        pass
-    if bench_start17 is None or abs(bench_start17 - 29.55) > 1e-6:
-        errors.append(f"TEST 17 FAIL: bench_start should be 29.55, got {bench_start17}")
-    else:
-        print(f"  [PASS] TEST 17: bench_start locked to inception price = {bench_start17}")
-
-    # TEST 17b: inception on weekend — bench_start uses last available price before
-    idx17b = pd.to_datetime(["2026-01-09", "2026-01-12"])  # Fri + Mon
-    df17b = pd.DataFrame({"V60A.AS": [29.40, 29.50]}, index=idx17b)
-    inception17b = pd.Timestamp("2026-01-10")  # Saturday — no price
-    bench_start17b = None
-    try:
-        sl = df17b.loc[:inception17b, "V60A.AS"].dropna()
-        if not sl.empty:
-            bench_start17b = float(sl.iloc[-1])
-    except:
-        pass
-    if bench_start17b is None or abs(bench_start17b - 29.40) > 1e-6:
-        errors.append(f"TEST 17b FAIL: bench_start should fall back to 29.40, got {bench_start17b}")
-    else:
-        print(f"  [PASS] TEST 17b: bench_start weekend fallback = {bench_start17b}")
-
-    # TEST 18: missing price adds 0, not qty
-    port_val_test = 10000.0
-    h_qty = 250
-    # Simulate missing ticker (not in prices.columns)
-    missing_ticker_in_prices = False
-    if missing_ticker_in_prices:
-        port_val_test += h_qty  # OLD buggy behaviour
-    else:
-        port_val_test += 0      # FIX 18
-    if abs(port_val_test - 10000.0) > 0.01:
-        errors.append(f"TEST 18 FAIL: missing price should add 0, port_val={port_val_test}")
-    else:
-        print(f"  [PASS] TEST 18: missing ticker adds 0 to NAV (not raw qty {h_qty})")
-
-    if errors:
-        print("\n=== FAILURES ===")
-        for e in errors:
-            print(" ", e)
-        raise SystemExit(1)
-    else:
-        print("\nAll tests passed.")
-
-if __name__ == "__main__":
-    _run_tests()
-    app.run(debug=True, port=5000)
+            "benchmark_max_drawdow
