@@ -24,7 +24,7 @@
 #      between the NAV endpoint and the KPI current_value caused by yfinance returning
 #      slightly different prices from its two call paths (download vs Ticker.history).
 #  11. BENCHMARK METRICS: calc_benchmark_metrics() computes Sharpe, Sortino, max drawdown,
-#      and 30d rolling vol for the  (SPY) series using identical formulas to
+#      and 30d rolling vol for the  (V60A.DE) series using identical formulas to
 #      calc_metrics(). Exposed as _metrics in /api/portfolio response.
 #  12. C&CE SLEEVE: positions with asset_class == "C&CE" are treated as the cash sleeve.
 #      Their live MV is included in total_val (via open_pos/total_mv) as normal.
@@ -222,7 +222,7 @@ def parse_config(config_rows):
         "starting_capital": float(cfg.get("starting_capital", 100000)),
         "base_currency":    cfg.get("base_currency", "USD"),
         "inception_date":   cfg.get("inception_date", "2026-01-14"),
-        "":        cfg.get("", "SPY"),
+        "":        cfg.get("", "V60A.DE"),
         "portfolio_name":   cfg.get("portfolio_name", "Investment Portfolio"),
         "display_currency": cfg.get("display_currency", "USD"),  # FIX 14
     }
@@ -699,7 +699,7 @@ def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[]
 def calc__metrics(bench_series, rf_annual=0.043):
     """
     FIX 11: Compute Sharpe, Sortino, max drawdown, and 30d rolling volatility
-    for the  (SPY) series using identical formulas to calc_metrics().
+    for the  (V60A.DE) series using identical formulas to calc_metrics().
     """
     if len(bench_series) < 2:
         return {
