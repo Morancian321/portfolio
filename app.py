@@ -36,9 +36,6 @@
 #      Cash received is treated as cash income — increases C&CE (residual cash) and
 #      realised P&L. Historical NAV curve injects income on the correct payment date.
 #      API exposes income_records, total_income_usd, dividends_usd, coupons_usd.
-#  14. DISPLAY CURRENCY: accounting remains fully USD-based, while the API can expose
-#      EUR-converted presentation values when display_currency == EUR in portfolio_config.
-#      This affects response amounts only; internal cash, NAV, P&L, and benchmark calcs remain USD.
 # SAFE: Sharpe, NAV curve logic, hit_rate, rolling_vol — unchanged.
 # ADDED: test harness under if __name__ == '__main__' for regressions.
 
@@ -176,7 +173,6 @@ def parse_config(config_rows):
     return {
         "starting_capital": float(cfg.get("starting_capital", 100000)),
         "base_currency":    cfg.get("base_currency", "USD"),
-        "display_currency": str(cfg.get("display_currency", cfg.get("base_currency", "USD"))).upper(),
         "inception_date":   cfg.get("inception_date", "2026-01-14"),
         "benchmark":        cfg.get("benchmark", "SPY"),
         "portfolio_name":   cfg.get("portfolio_name", "Investment Portfolio"),
@@ -191,8 +187,6 @@ def get_fx_rates():
                 rates[key] = float(h["Close"].iloc[-1])
         except:
             rates[key] = 1.0
-    eurusd = rates.get("EUR", 1.0) or 1.0
-    rates["USDEUR"] = 1.0 / eurusd if eurusd else 1.0
     return rates
 
 def get_risk_free_rate():
@@ -218,47 +212,6 @@ def get_live_price(yf_ticker, manual_map):
 def _is_tv_no_fx(trade_row):
     val = str(trade_row.get("tv_no_fx", "")).strip().upper()
     return val in ("TRUE", "1", "YES")
-
-def get_display_rate(cfg, fx_rates):
-    display_ccy = cfg.get("display_currency", "USD")
-    if display_ccy == "EUR":
-        return fx_rates.get("USDEUR", 1.0)
-    return 1.0
-
-def convert_amount(value, rate):
-    return round(float(value) * rate, 2)
-
-def convert_positions_for_display(positions, rate):
-    converted = []
-    for p in positions:
-        item = dict(p)
-        for key in ["mv_usd", "cost_usd", "unreal_pnl"]:
-            if key in item:
-                item[key] = convert_amount(item[key], rate)
-        converted.append(item)
-    return converted
-
-def convert_closed_for_display(closed, rate):
-    converted = []
-    for t in closed:
-        item = dict(t)
-        for key in ["realised_pnl_usd", "cost_usd_sold"]:
-            if key in item:
-                item[key] = convert_amount(item[key], rate)
-        converted.append(item)
-    return converted
-
-def convert_income_for_display(records, rate):
-    converted = []
-    for r in records:
-        item = dict(r)
-        if "cash_usd" in item:
-            item["cash_usd"] = convert_amount(item["cash_usd"], rate)
-        converted.append(item)
-    return converted
-
-def convert_nav_series_for_display(series, rate):
-    return [{"date": x["date"], "value": convert_amount(x["value"], rate)} for x in series]
 
 def build_positions(trades, fx_rates, manual_map):
     from collections import defaultdict
@@ -714,7 +667,6 @@ def portfolio():
         cfg          = parse_config(config_rows)
         fx_rates     = get_fx_rates()
         rf_rate      = get_risk_free_rate()
-        display_rate = get_display_rate(cfg, fx_rates)
         manual_map   = {r["ticker"]: r["manual_price"] for r in manual_rows if r.get("ticker")}
         nav_overrides = parse_nav_overrides(nav_overrides_rows)
 
@@ -731,7 +683,7 @@ def portfolio():
 
         # FIX 2 + FIX 13: Cash = starting_capital - cost_of_open_positions
         # + sale_proceeds + income_received (dividends + coupons).
-        proceeds_total = sum((t.get("cost_usd_sold", 0) + t.get("realised_pnl_usd", 0)) for t in closed)
+        proceeds_total = sum(t.get("realised_pnl_usd", 0) for t in closed)
         cash = cfg["starting_capital"] - total_cost + proceeds_total + total_income_usd
         cash = max(cash, 0)
         total_val = total_mv + cash
@@ -814,47 +766,33 @@ def portfolio():
                 ccy_mv += cash
             fx_exposure[currency + "_pct"] = round(ccy_mv / total_val * 100, 2) if total_val else 0
 
-        open_pos_display      = convert_positions_for_display(open_pos, display_rate)
-        closed_display        = convert_closed_for_display(closed, display_rate)
-        cce_positions_display = convert_positions_for_display(cce_positions, display_rate)
-        income_display        = convert_income_for_display(income_records, display_rate)
-        nav_display           = convert_nav_series_for_display(nav_series, display_rate)
-
-        metrics_display = dict(metrics)
-        for key in ["current_value", "total_pnl", "avg_gain_usd", "avg_loss_usd", "total_realised_pnl"]:
-            if key in metrics_display:
-                metrics_display[key] = convert_amount(metrics_display[key], display_rate)
-
         return jsonify({
             "portfolio_name":           cfg["portfolio_name"],
             "inception_date":           cfg["inception_date"],
             "benchmark":                cfg["benchmark"],
-            "base_currency":            cfg["base_currency"],
-            "display_currency":         cfg["display_currency"],
-            "usdeur_rate":              round(fx_rates.get("USDEUR", 1.0), 6),
-            "starting_capital":         convert_amount(cfg["starting_capital"], display_rate),
-            "current_value":            convert_amount(total_val, display_rate),
-            "total_pnl":                convert_amount(total_val - cfg["starting_capital"], display_rate),
-            "cash":                     convert_amount(cash, display_rate),
-            "cce_positions":            cce_positions_display,
-            "cce_total":                convert_amount(cce_total, display_rate),
-            "metrics":                  metrics_display,
+            "starting_capital":         cfg["starting_capital"],
+            "current_value":            round(total_val, 2),
+            "total_pnl":                round(total_val - cfg["starting_capital"], 2),
+            "cash":                     round(cash, 2),
+            "cce_positions":            cce_positions,
+            "cce_total":                cce_total,
+            "metrics":                  metrics,
             "benchmark_metrics":        bench_metrics,
             "simple_total_return_pct":  simple_total_return_pct,
             "rf_rate":                  round(rf_rate * 100, 3),
-            "open_positions":           open_pos_display,
-            "closed_trades":            closed_display,
+            "open_positions":           open_pos,
+            "closed_trades":            closed,
             "allocation":               alloc,
-            "nav_series":               nav_display,
+            "nav_series":               nav_series,
             "benchmark_series":         bench_series,
             "fx_rates":                 fx_rates,
             "fx_exposure":              fx_exposure,
             "position_sizing_policy":   SIZING_POLICY,
-            # FIX 13 + 14: Income fields for frontend income box, converted for display.
-            "income_records":           income_display,
-            "total_income_usd":         convert_amount(total_income_usd, display_rate),
-            "dividends_usd":            convert_amount(dividends_usd, display_rate),
-            "coupons_usd":              convert_amount(coupons_usd, display_rate),
+            # FIX 13: Income fields for frontend income box.
+            "income_records":           income_records,
+            "total_income_usd":         round(total_income_usd, 2),
+            "dividends_usd":            round(dividends_usd, 2),
+            "coupons_usd":              round(coupons_usd, 2),
         })
     except Exception as e:
         import traceback
@@ -1019,13 +957,14 @@ def _run_tests():
     try:
         val = float(df_tz.loc[:dt_naive, "IWDA.L"].iloc[-1])
         if abs(val - 120.1) > 1e-6:
-            errors.append(f"TZ fix FAIL: got {val}, expected {120.1}")
+            errors.append(f"TZ fix FAIL: got {val}, expected 120.1")
         else:
             print(f"  [PASS] TZ fix: prices.loc[:dt_naive] = {val} (no TypeError)")
     except Exception as e:
         errors.append(f"TZ fix FAIL: raised {type(e).__name__}: {e}")
 
     # TEST 8: FIX 10 NAV final-day alignment
+    mock_nav = [{"date": "2026-05-07", "value": 99000.0}]
     live_mv   = 95000.0
     live_cash_val = 5500.0
     expected_final = live_mv + live_cash_val
@@ -1118,17 +1057,6 @@ def _run_tests():
         errors.append(f"Realised P&L with income FAIL: got {total_rpl}, expected 110450")
     else:
         print(f"  [PASS] total_realised_pnl with income = {total_rpl}")
-
-    # TEST 14: display currency conversion helper
-    cfg_test = {"display_currency": "EUR"}
-    fx_rates_test = {"USDEUR": 0.92}
-    rate = get_display_rate(cfg_test, fx_rates_test)
-    if abs(rate - 0.92) > 1e-9:
-        errors.append(f"Display rate FAIL: got {rate}, expected 0.92")
-    elif abs(convert_amount(100.0, rate) - 92.0) > 0.01:
-        errors.append(f"convert_amount FAIL: got {convert_amount(100.0, rate)}, expected 92.0")
-    else:
-        print("  [PASS] display currency conversion helper")
 
     if errors:
         print("\n=== FAILURES ===")
