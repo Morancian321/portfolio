@@ -606,7 +606,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
 
     return nav_series, bench_series
 
-def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[], income_usd=0.0):
+def calc_metrics(nav_series, starting_capital, rf_annual=0.024, closed_trades=[], income_usd=0.0):
     # FIX 13: income_usd is the total cash received from dividends and coupons.
     # It is added to total_realised_pnl so that income is reflected in realised P&L.
     if len(nav_series) < 2:
@@ -696,7 +696,7 @@ def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[]
         "total_realised_pnl": total_realised_pnl,
     }
 
-def calc_benchmark_metrics(bench_series, rf_annual=0.043):
+def calc_benchmark_metrics(bench_series, rf_annual=0.024):
     """
     FIX 11: Compute Sharpe, Sortino, max drawdown, and 30d rolling volatility
     for the benchmark (SPY) series using identical formulas to calc_metrics().
