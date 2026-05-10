@@ -1191,12 +1191,6 @@ function renderPositions(root) {
         render: val => Badge(val, 'default')
       },
       {
-        key: 'amount_local', label: 'Local Amount',
-        render: (val, row) => row.currency !== 'USD'
-          ? Number(val).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})
-          : '-'
-      },
-      {
         key: 'cash_usd', label: 'Amount (USD)',
         render: val => `<span class="up">${fmt(val, 0)}<\/span>`
       }
