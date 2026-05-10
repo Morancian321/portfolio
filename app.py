@@ -797,7 +797,10 @@ def portfolio():
 
         # FIX 2 + FIX 13: Cash = starting_capital - cost_of_open_positions
         # + sale_proceeds + income_received (dividends + coupons).
-        proceeds_total = sum(t.get("realised_pnl_usd", 0) for t in closed)
+        proceeds_total = sum(
+            t.get("cost_usd_sold", 0) + t.get("realised_pnl_usd", 0)
+            for t in closed
+        )
         cash = cfg["starting_capital"] - total_cost + proceeds_total + total_income_usd
         cash = max(cash, 0)
         total_val = total_mv + cash
