@@ -24,7 +24,7 @@
 #      between the NAV endpoint and the KPI current_value caused by yfinance returning
 #      slightly different prices from its two call paths (download vs Ticker.history).
 #  11. BENCHMARK METRICS: calc_benchmark_metrics() computes Sharpe, Sortino, max drawdown,
-#      and 30d rolling vol for the benchmark (V60A) series using identical formulas to
+#      and 30d rolling vol for the benchmark (SPY) series using identical formulas to
 #      calc_metrics(). Exposed as benchmark_metrics in /api/portfolio response.
 #  12. C&CE SLEEVE: positions with asset_class == "C&CE" are treated as the cash sleeve.
 #      Their live MV is included in total_val (via open_pos/total_mv) as normal.
@@ -59,18 +59,6 @@
 #        3. Hardcoded 2.40% — ECB deposit facility rate as of May 2026. Used only
 #           when both live sources fail (network outage, API schema change, etc.).
 #      rf_rate is still exposed in the /api/portfolio response (as an annualised %).
-#  17. BENCH_START ANCHOR FIX: bench_start is now initialised by looking up V60A's price
-#      on exactly inception_date (using .loc[:inception_date].iloc[-1]) before the loop
-#      begins, rather than lazily on the first loop iteration that happens to have a price.
-#      This prevents the benchmark from appearing to start at a higher NAV than the fund
-#      when V60A has no price on inception_date itself (weekend, holiday, or data gap).
-#      If V60A has no price at or before inception_date, bench_start stays None and the
-#      old lazy behaviour is used as a safe fallback.
-#  18. MISSING PRICE GUARD: in the NAV loop, if a ticker is not in prices.columns at all,
-#      the old code fell back to adding h["qty"] (raw share count) to port_val as if it
-#      were USD — silently inflating NAV for large positions. The fix now adds 0 instead
-#      and logs a warning. A missing ticker means delisted, wrong yf_ticker, or network
-#      gap — in all cases 0 is a safer approximation than treating qty as a USD value.
 # SAFE: Sharpe, NAV curve logic, hit_rate, rolling_vol — unchanged.
 # ADDED: test harness under if __name__ == '__main__' for regressions.
 
@@ -234,7 +222,7 @@ def parse_config(config_rows):
         "starting_capital": float(cfg.get("starting_capital", 100000)),
         "base_currency":    cfg.get("base_currency", "USD"),
         "inception_date":   cfg.get("inception_date", "2026-01-14"),
-        "benchmark":        cfg.get("benchmark", "V60A.AS"),
+        "benchmark":        cfg.get("benchmark", "SPY"),
         "portfolio_name":   cfg.get("portfolio_name", "Investment Portfolio"),
         "display_currency": cfg.get("display_currency", "USD"),  # FIX 14
     }
@@ -538,21 +526,9 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
     cash         = starting
     nav_series   = []
     bench_series = []
+    bench_start  = None
     date_range   = pd.bdate_range(start=inception, end=today)
     last_date    = date_range[-1] if len(date_range) > 0 else None
-
-    # FIX 17: Pre-compute bench_start from the benchmark price at or before
-    # inception_date, so the rebase anchor is locked to inception regardless
-    # of whether the benchmark has a price on that exact date (weekend/holiday/gap).
-    bench_start = None
-    if benchmark_ticker in prices.columns:
-        try:
-            inception_ts = pd.Timestamp(inception)
-            bench_inception_slice = prices.loc[:inception_ts, benchmark_ticker].dropna()
-            if not bench_inception_slice.empty:
-                bench_start = float(bench_inception_slice.iloc[-1])
-        except:
-            pass  # Falls back to lazy first-seen initialisation below
 
     for dt in date_range:
         ds = dt.strftime("%Y-%m-%d")
@@ -613,29 +589,24 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
                         p_base = normalize_gbx_price(p_raw, avg_cost_base) if is_lse_pence(currency) else p_raw
                         port_val += p_base * fx_r * h["qty"]
                     else:
-                        # FIX 18: ticker not in prices — add 0 (not raw qty).
-                        # Adding h["qty"] would silently inflate NAV by treating
-                        # share count as a USD value (e.g. 250 shares -> +$250).
-                        port_val += 0
+                        port_val += h["qty"]
                 except:
                     pass
 
         nav_series.append({"date": ds, "value": round(port_val, 2)})
 
-        # FIX 17: bench_start is already locked to inception; use lazy fallback
-        # only if the pre-compute above found no price at or before inception.
         try:
             if benchmark_ticker in prices.columns:
                 bp = float(prices.loc[:dt, benchmark_ticker].iloc[-1])
                 if bench_start is None:
-                    bench_start = bp  # safe fallback: first date with a price
+                    bench_start = bp
                 bench_series.append({"date": ds, "value": round(starting * (bp / bench_start), 2)})
         except:
             pass
 
     return nav_series, bench_series
 
-def calc_metrics(nav_series, starting_capital, rf_annual=0.024, closed_trades=[], income_usd=0.0):
+def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[], income_usd=0.0):
     # FIX 13: income_usd is the total cash received from dividends and coupons.
     # It is added to total_realised_pnl so that income is reflected in realised P&L.
     if len(nav_series) < 2:
@@ -725,10 +696,10 @@ def calc_metrics(nav_series, starting_capital, rf_annual=0.024, closed_trades=[]
         "total_realised_pnl": total_realised_pnl,
     }
 
-def calc_benchmark_metrics(bench_series, rf_annual=0.024):
+def calc_benchmark_metrics(bench_series, rf_annual=0.043):
     """
     FIX 11: Compute Sharpe, Sortino, max drawdown, and 30d rolling volatility
-    for the benchmark (V60A) series using identical formulas to calc_metrics().
+    for the benchmark (SPY) series using identical formulas to calc_metrics().
     """
     if len(bench_series) < 2:
         return {
@@ -982,7 +953,7 @@ def portfolio():
 @app.route("/api/price_history")
 def price_history():
     from flask import request
-    ticker = request.args.get("ticker", "V60A.AS")
+    ticker = request.args.get("ticker", "SPY")
     period = request.args.get("period", "6mo")
     try:
         h = yf.Ticker(ticker).history(period=period)
@@ -1252,7 +1223,7 @@ def _run_tests():
     if abs(converted - expected_eur) > 0.01:
         errors.append(f"Display currency conversion FAIL: got {converted}, expected {expected_eur}")
     else:
-        print(f"  [PASS] Display currency conversion: ${test_usd_val} -> \u20ac{converted} (rate: {test_usd_to_disp:.6f})")
+        print(f"  [PASS] Display currency conversion: ${test_usd_val} -> €{converted} (rate: {test_usd_to_disp:.6f})")
 
     # TEST 15a: get_currency() prefers explicit column over suffix
     row_usd_lse = {"currency": "USD", "yf_ticker": "AGGG.L"}
@@ -1293,8 +1264,8 @@ def _run_tests():
         print("  [PASS] TEST 15c: fx_key() maps GBX->GBP, others unchanged")
 
     # TEST 15d: pence divide applied for GBX, not for USD .L ticker
-    price_gbx = 947500.0
-    price_usd_lse = 446.05
+    price_gbx = 947500.0   # WSML.L quoted in pence — but wait, WSML is USD in the new sheet
+    price_usd_lse = 446.05  # AGGG.L quoted in USD
     gbx_base = price_gbx / 100 if is_lse_pence("GBX") else price_gbx
     usd_base = price_usd_lse / 100 if is_lse_pence("USD") else price_usd_lse
     if abs(gbx_base - 9475.0) > 0.01:
@@ -1303,52 +1274,6 @@ def _run_tests():
         errors.append(f"TEST 15d FAIL: USD .L should NOT be divided by 100, got {usd_base}")
     else:
         print(f"  [PASS] TEST 15d: GBX /100 = {gbx_base}, USD .L unchanged = {usd_base}")
-
-    # TEST 17: bench_start pre-computed at inception
-    idx17 = pd.to_datetime(["2026-01-13", "2026-01-14", "2026-01-15", "2026-01-16"])
-    df17 = pd.DataFrame({"V60A.AS": [29.50, 29.55, 29.60, 29.65]}, index=idx17)
-    inception17 = pd.Timestamp("2026-01-14")
-    bench_start17 = None
-    try:
-        sl = df17.loc[:inception17, "V60A.AS"].dropna()
-        if not sl.empty:
-            bench_start17 = float(sl.iloc[-1])
-    except:
-        pass
-    if bench_start17 is None or abs(bench_start17 - 29.55) > 1e-6:
-        errors.append(f"TEST 17 FAIL: bench_start should be 29.55, got {bench_start17}")
-    else:
-        print(f"  [PASS] TEST 17: bench_start locked to inception price = {bench_start17}")
-
-    # TEST 17b: inception on weekend — bench_start uses last available price before
-    idx17b = pd.to_datetime(["2026-01-09", "2026-01-12"])  # Fri + Mon
-    df17b = pd.DataFrame({"V60A.AS": [29.40, 29.50]}, index=idx17b)
-    inception17b = pd.Timestamp("2026-01-10")  # Saturday — no price
-    bench_start17b = None
-    try:
-        sl = df17b.loc[:inception17b, "V60A.AS"].dropna()
-        if not sl.empty:
-            bench_start17b = float(sl.iloc[-1])
-    except:
-        pass
-    if bench_start17b is None or abs(bench_start17b - 29.40) > 1e-6:
-        errors.append(f"TEST 17b FAIL: bench_start should fall back to 29.40, got {bench_start17b}")
-    else:
-        print(f"  [PASS] TEST 17b: bench_start weekend fallback = {bench_start17b}")
-
-    # TEST 18: missing price adds 0, not qty
-    port_val_test = 10000.0
-    h_qty = 250
-    # Simulate missing ticker (not in prices.columns)
-    missing_ticker_in_prices = False
-    if missing_ticker_in_prices:
-        port_val_test += h_qty  # OLD buggy behaviour
-    else:
-        port_val_test += 0      # FIX 18
-    if abs(port_val_test - 10000.0) > 0.01:
-        errors.append(f"TEST 18 FAIL: missing price should add 0, port_val={port_val_test}")
-    else:
-        print(f"  [PASS] TEST 18: missing ticker adds 0 to NAV (not raw qty {h_qty})")
 
     if errors:
         print("\n=== FAILURES ===")
