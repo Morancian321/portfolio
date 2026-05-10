@@ -374,6 +374,11 @@ const getBenchmarkMetrics= () => window._portfolioData?.benchmark_metrics || {};
 // C&CE sleeve getters
 const getCCEPositions    = () => window._portfolioData?.cce_positions || [];
 const getCCETotal        = () => window._portfolioData?.cce_total || 0;
+// Income getters (FIX 13)
+const getIncomeRecords   = () => window._portfolioData?.income_records || [];
+const getTotalIncome     = () => window._portfolioData?.total_income_usd || 0;
+const getDividendsUsd    = () => window._portfolioData?.dividends_usd || 0;
+const getCouponsUsd      = () => window._portfolioData?.coupons_usd || 0;
 
 // ════════════════════════════════════════════════════════════════════════════
 // SECTION 4 - DERIVED METRICS
@@ -746,9 +751,16 @@ function renderDashboard(root) {
   )].sort();
   const BANDS = ['Core','Satellite','Opportunistic','Speculative','Unclassified'];
 
-  // ── C&CE totals for KPI card ──────────────────────────────────────────────
-  const cceTotal  = getCCETotal();
-  const navTotal  = summary.current_value || 1;
+  // ── C&CE + Income totals for KPI card ────────────────────────────────────
+  const cceTotal     = getCCETotal();
+  const navTotal     = summary.current_value || 1;
+  const totalIncome  = getTotalIncome();
+  const divIncome    = getDividendsUsd();
+  const couponIncome = getCouponsUsd();
+  const incomeSubtitle = totalIncome > 0
+    ? fmtPctRaw(navTotal > 0 ? (cceTotal / navTotal * 100) : 0)
+      + ' of NAV · ' + fmt(divIncome, 0) + ' div · ' + fmt(couponIncome, 0) + ' coupon'
+    : fmtPctRaw(navTotal > 0 ? (cceTotal / navTotal * 100) : 0) + ' of NAV';
 
   // ── Build HTML ────────────────────────────────────────────────────────────
   root.innerHTML = `
@@ -782,7 +794,7 @@ function renderDashboard(root) {
       ${MetricCard(
         'Cash &amp; Cash Equivalents',
         fmt(cceTotal, 0),
-        fmtPctRaw(navTotal > 0 ? (cceTotal / navTotal * 100) : 0) + ' of NAV'
+        incomeSubtitle
       )}
     </div>
 
@@ -1071,6 +1083,12 @@ function renderPositions(root) {
   const uninvested   = summary.cash || 0;
   const navTotal     = summary.current_value || 1;
 
+  // Income data
+  const incomeRecords  = [...getIncomeRecords()].sort((a, b) => new Date(b.date) - new Date(a.date));
+  const totalIncome    = getTotalIncome();
+  const divIncome      = getDividendsUsd();
+  const couponIncome   = getCouponsUsd();
+
   root.innerHTML = `
     ${SectionHeader('Positions', 'Open positions &amp; cash sleeve')}
 
@@ -1099,6 +1117,29 @@ function renderPositions(root) {
         </div>
       </div>
       <div id="posCCETableWrap"></div>
+    </div>
+
+    <!-- Income Received Box -->
+    <div class="table-card section-gap">
+      <div class="table-header">
+        <h2>Income Received</h2>
+        <div style="display:flex;gap:1.5rem;align-items:center">
+          <div class="cce-stat">
+            <span class="cce-stat-label">Dividends</span>
+            <span class="cce-stat-value">${fmt(divIncome, 0)}</span>
+          </div>
+          <div class="cce-stat">
+            <span class="cce-stat-label">Coupons</span>
+            <span class="cce-stat-value">${fmt(couponIncome, 0)}</span>
+          </div>
+          <div style="width:1px;height:2rem;background:var(--color-divider)"></div>
+          <div class="cce-stat">
+            <span class="cce-stat-label">Total Income</span>
+            <span class="cce-total-value">${fmt(totalIncome, 0)}</span>
+          </div>
+        </div>
+      </div>
+      <div id="posIncomeTableWrap"></div>
     </div>
   `;
 
@@ -1130,6 +1171,42 @@ function renderPositions(root) {
       ? EmptyState('💵', 'No C&CE instruments deployed',
           'Add rows with asset_class "C&CE" to your trades sheet to populate this table. Uninvested cash is shown in the header above.')
       : DataTable(cceCols, ccePositions, {});
+  }
+
+  // ── Income Table ──────────────────────────────────────────────────────────
+  const incomeWrap = document.getElementById('posIncomeTableWrap');
+  if (incomeWrap) {
+    const incomeCols = [
+      { key: 'date', label: 'Date', render: val => val || '-' },
+      {
+        key: 'income_type', label: 'Type',
+        render: val => Badge(val, val === 'Dividend' ? 'success' : 'purple')
+      },
+      {
+        key: 'note', label: 'Source',
+        render: val => `<span style="font-weight:500">${val || '-'}<\/span>`
+      },
+      {
+        key: 'currency', label: 'Currency',
+        render: val => Badge(val, 'default')
+      },
+      {
+        key: 'amount_local', label: 'Local Amount',
+        render: (val, row) => row.currency !== 'USD'
+          ? Number(val).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})
+          : '-'
+      },
+      {
+        key: 'cash_usd', label: 'Amount (USD)',
+        render: val => `<span class="up">${fmt(val, 0)}<\/span>`
+      }
+    ];
+    incomeWrap.innerHTML = !incomeRecords.length
+      ? EmptyState('💰', 'No income recorded',
+          'Dividend and coupon payments logged in the dividends_coupons sheet will appear here.')
+      : DataTable(incomeCols, incomeRecords, {
+          emptyMessage: 'No income records to display.'
+        });
   }
 }
 
