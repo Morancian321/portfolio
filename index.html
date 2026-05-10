@@ -491,6 +491,9 @@ function PolicyStatusCard(title, status, statusVariant, description, actionLabel
   const aHTML = actionLabel ? `<div class="policy-card-action"><a href="${actionHref}">${actionLabel}<\/a><\/div>` : '';
   return `<div class="policy-card"><div class="policy-card-header"><span class="policy-card-title">${title}<\/span>${Badge(status,statusVariant)}<\/div><div class="policy-card-desc">${description}<\/div>${aHTML}<\/div>`;
 }
+
+// BenchmarkKpiCard: displays a ratio/% metric with a vs-V60A delta line.
+// Used for Sharpe, Sortino, Max DD, 30d Vol AND Total Growth.
 function BenchmarkKpiCard(label, portVal, benchVal, higherIsBetter = true) {
   const pNum = portVal != null ? Number(portVal) : null;
   const bNum = benchVal != null ? Number(benchVal) : null;
@@ -505,6 +508,35 @@ function BenchmarkKpiCard(label, portVal, benchVal, higherIsBetter = true) {
   }
   return `<div class="kpi-card"><div class="kpi-label">${label}</div><div class="kpi-value">${portFmt}</div><div class="kpi-delta neutral" style="font-size:.7rem">V60A: ${benchFmt}</div>${deltaHTML}</div>`;
 }
+
+// TotalGrowthKpiCard: same BenchmarkKpiCard pattern but displays monetary
+// value (total_pnl) as the headline and % return for the benchmark line.
+// portPnl = absolute €/$ value, portRetPct = fund return %, benchRetPct = V60A return %.
+function TotalGrowthKpiCard(portPnl, portRetPct, benchRetPct) {
+  const pnlPos   = (portPnl || 0) >= 0;
+  const pNum     = portRetPct != null ? Number(portRetPct) : null;
+  const bNum     = benchRetPct != null ? Number(benchRetPct) : null;
+  const benchFmt = bNum != null ? (bNum >= 0 ? '+' : '') + bNum.toFixed(2) + '%' : '-';
+  let deltaHTML  = '';
+  if (pNum != null && bNum != null) {
+    const diff    = pNum - bNum;
+    const beating = diff >= 0;
+    const sign    = diff >= 0 ? '+' : '';
+    deltaHTML = `<div class="kpi-delta ${beating ? 'up' : 'down'}">${sign}${diff.toFixed(2)}pp vs V60A</div>`;
+  }
+  const retLine = pNum != null
+    ? `<div class="kpi-delta ${pnlPos ? 'up' : 'down'}">${(pNum >= 0 ? '+' : '') + pNum.toFixed(2)}%</div>`
+    : '';
+  return `
+    <div class="kpi-card ${pnlPos ? 'success' : 'danger'}">
+      <div class="kpi-label">Total Growth</div>
+      <div class="kpi-value">${fmt(portPnl, 2)}</div>
+      ${retLine}
+      <div class="kpi-delta neutral" style="font-size:.7rem">V60A: ${benchFmt}</div>
+      ${deltaHTML}
+    </div>`;
+}
+
 function EmptyState(icon, title, message) {
   return `<div class="empty-state"><div class="empty-icon">${icon}<\/div><strong>${title}<\/strong><p>${message}<\/p><\/div>`;
 }
@@ -741,8 +773,17 @@ function renderDashboard(root) {
   const allocation  = getAllocation();
   const currentRange = window._dashRange || 'Since Inception';
 
-  // ── Total P&L helpers ─────────────────────────────────────────────────────
+  // ── Total Growth helpers ──────────────────────────────────────────────────
   const pnlPos = (summary.total_pnl || 0) >= 0;
+
+  // Compute V60A % return since inception for the Total Growth card:
+  // bench_series is rebased to starting_capital, so return = (last - first) / first * 100.
+  const benchRetPct = (() => {
+    if (!benchSeries.length) return null;
+    const first = benchSeries[0].value;
+    const last  = benchSeries[benchSeries.length - 1].value;
+    return first > 0 ? ((last - first) / first) * 100 : null;
+  })();
 
   // ── Open positions filter - build unique asset classes (exclude C&CE) ─────
   const allOpenPos = getOpenPositions();
@@ -773,12 +814,10 @@ function renderDashboard(root) {
         fmt(summary.current_value, 0),
         'Since ' + (summary.inception_date || 'inception')
       )}
-      ${MetricCard(
-        'Total P&amp;L',
-        fmt(summary.total_pnl, 2),
-        '',
-        { text: fmtPct(summary.simple_total_return_pct), cls: pnlPos ? 'up' : 'down' },
-        pnlPos ? 'success' : 'danger'
+      ${TotalGrowthKpiCard(
+        summary.total_pnl,
+        summary.simple_total_return_pct,
+        benchRetPct
       )}
       ${MetricCard(
         'Realised P&amp;L',
