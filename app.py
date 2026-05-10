@@ -24,8 +24,8 @@
 #      between the NAV endpoint and the KPI current_value caused by yfinance returning
 #      slightly different prices from its two call paths (download vs Ticker.history).
 #  11. BENCHMARK METRICS: calc_benchmark_metrics() computes Sharpe, Sortino, max drawdown,
-#      and 30d rolling vol for the  (V60A.DE) series using identical formulas to
-#      calc_metrics(). Exposed as _metrics in /api/portfolio response.
+#      and 30d rolling vol for the benchmark (SPY) series using identical formulas to
+#      calc_metrics(). Exposed as benchmark_metrics in /api/portfolio response.
 #  12. C&CE SLEEVE: positions with asset_class == "C&CE" are treated as the cash sleeve.
 #      Their live MV is included in total_val (via open_pos/total_mv) as normal.
 #      The alloc dict merges residual uninvested cash into the "C&CE" bucket rather than
@@ -222,7 +222,7 @@ def parse_config(config_rows):
         "starting_capital": float(cfg.get("starting_capital", 100000)),
         "base_currency":    cfg.get("base_currency", "USD"),
         "inception_date":   cfg.get("inception_date", "2026-01-14"),
-        "benchmark":        cfg.get("", "V60A.DE"),
+        "benchmark":        cfg.get("benchmark", "SPY"),
         "portfolio_name":   cfg.get("portfolio_name", "Investment Portfolio"),
         "display_currency": cfg.get("display_currency", "USD"),  # FIX 14
     }
@@ -467,7 +467,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
             ticker_map[t["ticker"]] = t.get("yf_ticker")
 
     fx_tickers  = ["GBPUSD=X", "EURUSD=X"]
-    all_tickers = list(set(ticker_map.values())) + fx_tickers + [_ticker]
+    all_tickers = list(set(ticker_map.values())) + fx_tickers + [benchmark_ticker]
     raw = yf.download(all_tickers,
                       start=inception.strftime("%Y-%m-%d"),
                       end=(today + timedelta(days=1)).strftime("%Y-%m-%d"),
@@ -596,8 +596,8 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
         nav_series.append({"date": ds, "value": round(port_val, 2)})
 
         try:
-            if _ticker in prices.columns:
-                bp = float(prices.loc[:dt, _ticker].iloc[-1])
+            if benchmark_ticker in prices.columns:
+                bp = float(prices.loc[:dt, benchmark_ticker].iloc[-1])
                 if bench_start is None:
                     bench_start = bp
                 bench_series.append({"date": ds, "value": round(starting * (bp / bench_start), 2)})
@@ -696,10 +696,10 @@ def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[]
         "total_realised_pnl": total_realised_pnl,
     }
 
-def calc_metrics(bench_series, rf_annual=0.043):
+def calc_benchmark_metrics(bench_series, rf_annual=0.043):
     """
     FIX 11: Compute Sharpe, Sortino, max drawdown, and 30d rolling volatility
-    for the  (V60A.DE) series using identical formulas to calc_metrics().
+    for the benchmark (SPY) series using identical formulas to calc_metrics().
     """
     if len(bench_series) < 2:
         return {
@@ -953,7 +953,7 @@ def portfolio():
 @app.route("/api/price_history")
 def price_history():
     from flask import request
-    ticker = request.args.get("ticker", "V60A.DE")
+    ticker = request.args.get("ticker", "SPY")
     period = request.args.get("period", "6mo")
     try:
         h = yf.Ticker(ticker).history(period=period)
