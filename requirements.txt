@@ -4,3 +4,4 @@ gspread
 yfinance
 pandas
 gunicorn
+requests
