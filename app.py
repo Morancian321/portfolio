@@ -222,7 +222,7 @@ def parse_config(config_rows):
         "starting_capital": float(cfg.get("starting_capital", 100000)),
         "base_currency":    cfg.get("base_currency", "USD"),
         "inception_date":   cfg.get("inception_date", "2026-01-14"),
-        "":        cfg.get("", "V60A.DE"),
+        "benchmark":        cfg.get("", "V60A.DE"),
         "portfolio_name":   cfg.get("portfolio_name", "Investment Portfolio"),
         "display_currency": cfg.get("display_currency", "USD"),  # FIX 14
     }
@@ -448,7 +448,7 @@ def build_positions(trades, fx_rates, manual_map):
 
     return open_positions, closed_trades
 
-def build_nav_curve(trades, fx_rates, cfg, _ticker, nav_overrides=None,
+def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
                     live_positions_mv=None, live_cash=None, income_records=None):
     # FIX 13: income_records are pre-indexed by date so that cash is increased
     # on the correct historical payment date in the NAV curve loop.
@@ -696,7 +696,7 @@ def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[]
         "total_realised_pnl": total_realised_pnl,
     }
 
-def calc__metrics(bench_series, rf_annual=0.043):
+def calc_metrics(bench_series, rf_annual=0.043):
     """
     FIX 11: Compute Sharpe, Sortino, max drawdown, and 30d rolling volatility
     for the  (V60A.DE) series using identical formulas to calc_metrics().
