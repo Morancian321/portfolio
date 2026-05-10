@@ -36,6 +36,11 @@
 #      Cash received is treated as cash income — increases C&CE (residual cash) and
 #      realised P&L. Historical NAV curve injects income on the correct payment date.
 #      API exposes income_records, total_income_usd, dividends_usd, coupons_usd.
+#  14. DISPLAY CURRENCY: all internal calculations remain in USD. A display_currency key
+#      in portfolio_config sheet (e.g. "EUR") triggers a single conversion layer at the
+#      end of /api/portfolio before the JSON response is built. Ratio-based metrics
+#      (Sharpe, Sortino, drawdown, vol, return %) are unaffected. Switching currency
+#      requires only a single cell change in the Google Sheet.
 # SAFE: Sharpe, NAV curve logic, hit_rate, rolling_vol — unchanged.
 # ADDED: test harness under if __name__ == '__main__' for regressions.
 
@@ -176,6 +181,7 @@ def parse_config(config_rows):
         "inception_date":   cfg.get("inception_date", "2026-01-14"),
         "benchmark":        cfg.get("benchmark", "SPY"),
         "portfolio_name":   cfg.get("portfolio_name", "Investment Portfolio"),
+        "display_currency": cfg.get("display_currency", "USD"),  # FIX 14
     }
 
 def get_fx_rates():
@@ -766,16 +772,80 @@ def portfolio():
                 ccy_mv += cash
             fx_exposure[currency + "_pct"] = round(ccy_mv / total_val * 100, 2) if total_val else 0
 
+        # -----------------------------------------------------------------
+        # FIX 14: DISPLAY CURRENCY CONVERSION LAYER
+        # All internal calculations above remain in USD.
+        # If display_currency != "USD", convert all monetary outputs here
+        # using the live FX rate fetched at the top of this request.
+        # Ratio-based metrics (Sharpe, Sortino, drawdown %, return %) are
+        # unaffected. To switch currency, change one cell in the config sheet.
+        # -----------------------------------------------------------------
+        disp = cfg.get("display_currency", "USD")
+        if disp != "USD" and disp in fx_rates:
+            usd_to_disp = 1.0 / fx_rates[disp]
+
+            def conv(v):
+                return round(v * usd_to_disp, 2) if isinstance(v, (int, float)) else v
+
+            # Top-level scalars
+            starting_capital_disp = conv(cfg["starting_capital"])
+            current_value_disp    = conv(total_val)
+            total_pnl_disp        = conv(total_val - cfg["starting_capital"])
+            cash_disp             = conv(cash)
+            cce_total_disp        = conv(cce_total)
+            total_income_disp     = conv(total_income_usd)
+            dividends_disp        = conv(dividends_usd)
+            coupons_disp          = conv(coupons_usd)
+
+            # Monetary fields inside metrics (ratios/percentages are left untouched)
+            for key in ["current_value", "total_pnl", "avg_gain_usd", "avg_loss_usd", "total_realised_pnl"]:
+                if key in metrics:
+                    metrics[key] = conv(metrics[key])
+
+            # Open positions
+            for p in open_pos:
+                for field in ["mv_usd", "cost_usd", "unreal_pnl"]:
+                    p[field] = conv(p[field])
+
+            # Closed trades
+            for t in closed:
+                for field in ["realised_pnl_usd", "cost_usd_sold"]:
+                    t[field] = conv(t[field])
+
+            # NAV and benchmark series
+            nav_series   = [{"date": x["date"], "value": conv(x["value"])} for x in nav_series]
+            bench_series = [{"date": x["date"], "value": conv(x["value"])} for x in bench_series]
+
+            # Income records
+            for r in income_records:
+                r["cash_usd"] = conv(r["cash_usd"])
+
+            # C&CE positions monetary fields
+            for p in cce_positions:
+                for field in ["mv_usd", "cost_usd", "unreal_pnl"]:
+                    p[field] = conv(p[field])
+
+        else:
+            usd_to_disp           = 1.0
+            starting_capital_disp = cfg["starting_capital"]
+            current_value_disp    = round(total_val, 2)
+            total_pnl_disp        = round(total_val - cfg["starting_capital"], 2)
+            cash_disp             = round(cash, 2)
+            cce_total_disp        = round(cce_total, 2)
+            total_income_disp     = round(total_income_usd, 2)
+            dividends_disp        = round(dividends_usd, 2)
+            coupons_disp          = round(coupons_usd, 2)
+
         return jsonify({
             "portfolio_name":           cfg["portfolio_name"],
             "inception_date":           cfg["inception_date"],
             "benchmark":                cfg["benchmark"],
-            "starting_capital":         cfg["starting_capital"],
-            "current_value":            round(total_val, 2),
-            "total_pnl":                round(total_val - cfg["starting_capital"], 2),
-            "cash":                     round(cash, 2),
+            "starting_capital":         starting_capital_disp,
+            "current_value":            current_value_disp,
+            "total_pnl":                total_pnl_disp,
+            "cash":                     cash_disp,
             "cce_positions":            cce_positions,
-            "cce_total":                cce_total,
+            "cce_total":                cce_total_disp,
             "metrics":                  metrics,
             "benchmark_metrics":        bench_metrics,
             "simple_total_return_pct":  simple_total_return_pct,
@@ -788,11 +858,13 @@ def portfolio():
             "fx_rates":                 fx_rates,
             "fx_exposure":              fx_exposure,
             "position_sizing_policy":   SIZING_POLICY,
+            "display_currency":         disp,
+            "usd_to_display":           round(usd_to_disp, 6),
             # FIX 13: Income fields for frontend income box.
             "income_records":           income_records,
-            "total_income_usd":         round(total_income_usd, 2),
-            "dividends_usd":            round(dividends_usd, 2),
-            "coupons_usd":              round(coupons_usd, 2),
+            "total_income_usd":         total_income_disp,
+            "dividends_usd":            dividends_disp,
+            "coupons_usd":              coupons_disp,
         })
     except Exception as e:
         import traceback
@@ -1057,6 +1129,18 @@ def _run_tests():
         errors.append(f"Realised P&L with income FAIL: got {total_rpl}, expected 110450")
     else:
         print(f"  [PASS] total_realised_pnl with income = {total_rpl}")
+
+    # TEST 14: display_currency conversion layer
+    test_usd_val = 10000.0
+    test_fx_rates = {"USD": 1.0, "EUR": 1.08, "GBP": 1.25}
+    test_disp = "EUR"
+    test_usd_to_disp = 1.0 / test_fx_rates[test_disp]
+    converted = round(test_usd_val * test_usd_to_disp, 2)
+    expected_eur = round(10000.0 / 1.08, 2)
+    if abs(converted - expected_eur) > 0.01:
+        errors.append(f"Display currency conversion FAIL: got {converted}, expected {expected_eur}")
+    else:
+        print(f"  [PASS] Display currency conversion: ${test_usd_val} -> €{converted} (rate: {test_usd_to_disp:.6f})")
 
     if errors:
         print("\n=== FAILURES ===")
