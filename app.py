@@ -50,6 +50,15 @@
 #      flag and helper are removed as the currency column makes them redundant.
 #      GBX is normalised to GBP for FX rate lookups (both use GBPUSD=X); the /100
 #      divide converts pence prices to pounds before the GBP->USD FX step.
+#  16. RISK-FREE RATE: now EUR-denominated to match the fund's display currency.
+#      Three-tier fallback chain:
+#        1. ECB SDMX REST API — live daily €STR (Euro Short-Term Rate, overnight).
+#           No API key required. Endpoint: data-api.ecb.europa.eu/service/data/ST/...
+#        2. EURIBOR3M=X via yfinance — 3-month EUR interbank rate. Reliable fallback
+#           when the ECB API is reachable but returns stale/empty data.
+#        3. Hardcoded 2.40% — ECB deposit facility rate as of May 2026. Used only
+#           when both live sources fail (network outage, API schema change, etc.).
+#      rf_rate is still exposed in the /api/portfolio response (as an annualised %).
 # SAFE: Sharpe, NAV curve logic, hit_rate, rolling_vol — unchanged.
 # ADDED: test harness under if __name__ == '__main__' for regressions.
 
@@ -230,13 +239,43 @@ def get_fx_rates():
     return rates
 
 def get_risk_free_rate():
+    """
+    FIX 16: EUR risk-free rate — three-tier fallback chain.
+    1. ECB SDMX REST API: live daily €STR (Euro Short-Term Rate, overnight).
+       No API key required.
+    2. EURIBOR3M=X via yfinance: 3-month EUR interbank rate.
+    3. Hardcoded 2.40%: ECB deposit facility rate as of May 2026.
+    """
+    import requests
+
+    # Tier 1: ECB live €STR
     try:
-        h = yf.Ticker("^IRX").history(period="5d")
-        if not h.empty:
-            return float(h["Close"].iloc[-1]) / 100
+        url = (
+            "https://data-api.ecb.europa.eu/service/data/ST/"
+            "D.EUR.ESTR.RATE?lastNObservations=1&format=jsondata"
+        )
+        r = requests.get(url, timeout=5)
+        if r.status_code == 200:
+            obs = r.json()["dataSets"][0]["series"]["0:0:0:0"]["observations"]
+            latest = obs[max(obs.keys(), key=int)][0]
+            rate = float(latest) / 100
+            if rate > 0:
+                return rate
     except:
         pass
-    return 0.043
+
+    # Tier 2: EURIBOR3M via yfinance
+    try:
+        h = yf.Ticker("EURIBOR3M=X").history(period="5d")
+        if not h.empty:
+            rate = float(h["Close"].iloc[-1])
+            if rate > 0:
+                return rate / 100
+    except:
+        pass
+
+    # Tier 3: hardcoded ECB deposit rate (May 2026)
+    return 0.024
 
 def get_live_price(yf_ticker, manual_map):
     if yf_ticker in manual_map:
