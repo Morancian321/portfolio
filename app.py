@@ -41,6 +41,15 @@
 #      end of /api/portfolio before the JSON response is built. Ratio-based metrics
 #      (Sharpe, Sortino, drawdown, vol, return %) are unaffected. Switching currency
 #      requires only a single cell change in the Google Sheet.
+#  15. CURRENCY COLUMN: get_currency() now reads the explicit "currency" column from each
+#      trade row first, falling back to yf_ticker suffix only if the column is blank.
+#      GBX (pence-denominated) is now the sole trigger for the /100 pence conversion
+#      via is_lse_pence() — replacing the old is_lse() suffix check. This correctly
+#      handles USD-denominated ETFs listed on the LSE (e.g. AGGG.L, WSML.L) which must
+#      NOT be divided by 100 and must use USD FX (i.e. no conversion). The tv_no_fx
+#      flag and helper are removed as the currency column makes them redundant.
+#      GBX is normalised to GBP for FX rate lookups (both use GBPUSD=X); the /100
+#      divide converts pence prices to pounds before the GBP->USD FX step.
 # SAFE: Sharpe, NAV curve logic, hit_rate, rolling_vol — unchanged.
 # ADDED: test harness under if __name__ == '__main__' for regressions.
 
@@ -66,8 +75,22 @@ SIZING_POLICY = {
     "Speculative":   {"tickers": ["BTCUSD", "BTC-USD", "COIN"],     "min_pct": 0,  "max_pct": 2},
 }
 
-def get_currency(yf_ticker):
-    t = yf_ticker.upper()
+# FIX 15: Read explicit "currency" column from the trade row first.
+# Falls back to suffix-based inference only if the column is blank/missing.
+# GBX is treated as GBP for FX lookups (both use GBPUSD=X); is_lse_pence()
+# handles the /100 pence-to-pounds conversion separately.
+def get_currency(trade_row_or_ticker, yf_ticker=None):
+    # Called with (trade_row dict, yf_ticker) — new path
+    if isinstance(trade_row_or_ticker, dict):
+        explicit = str(trade_row_or_ticker.get("currency", "")).strip().upper()
+        if explicit in ("USD", "GBP", "GBX", "EUR"):
+            return explicit
+        # fall through to suffix inference using yf_ticker
+        t = (yf_ticker or "").upper()
+    else:
+        # Legacy call: get_currency(yf_ticker_string) — kept for safety
+        t = trade_row_or_ticker.upper()
+
     if t.endswith(".L"):   return "GBP"
     if t.endswith(".AS"):  return "EUR"
     if t.endswith(".PA"):  return "EUR"
@@ -75,11 +98,22 @@ def get_currency(yf_ticker):
     if t.endswith(".IR"):  return "EUR"
     return "USD"
 
-def is_lse(yf_ticker):
-    return yf_ticker.upper().endswith(".L")
+# FIX 15: Replaces is_lse(). The /100 pence divide is now triggered ONLY when
+# currency == "GBX" (pence), not by the .L suffix. USD/GBP/EUR .L tickers are
+# priced in their stated currency and must NOT be divided by 100.
+def is_lse_pence(currency):
+    return currency == "GBX"
 
-def normalize_lse_price(raw_price, avg_price_gbp):
-    if avg_price_gbp > 0 and raw_price > avg_price_gbp * 50:
+# FX lookup key: GBX uses the same GBPUSD=X rate as GBP (pence are still sterling).
+def fx_key(currency):
+    return "GBP" if currency == "GBX" else currency
+
+def normalize_gbx_price(raw_price, avg_price_pounds):
+    """
+    Retained for GBX positions: yfinance may return pence or pounds inconsistently.
+    Only called when currency == GBX.
+    """
+    if avg_price_pounds > 0 and raw_price > avg_price_pounds * 50:
         return raw_price / 100
     return raw_price
 
@@ -147,7 +181,7 @@ def parse_income(income_rows, fx_rates):
     for row in income_rows:
         amount_local = float(row.get("div_income", 0) or 0)
         currency     = str(row.get("currency", "USD")).strip().upper()
-        fx           = fx_rates.get(currency, 1.0)
+        fx           = fx_rates.get(fx_key(currency), 1.0)
         income_type  = str(row.get("asset_class", "")).strip().capitalize()  # "Dividend" or "Coupon"
         records.append({
             "date":         str(row.get("date", "")),
@@ -215,10 +249,6 @@ def get_live_price(yf_ticker, manual_map):
         pass
     return None
 
-def _is_tv_no_fx(trade_row):
-    val = str(trade_row.get("tv_no_fx", "")).strip().upper()
-    return val in ("TRUE", "1", "YES")
-
 def build_positions(trades, fx_rates, manual_map):
     from collections import defaultdict
     ticker_trades = defaultdict(list)
@@ -238,12 +268,15 @@ def build_positions(trades, fx_rates, manual_map):
         asset_class = events_sorted[0].get("asset_class", "")
         name        = events_sorted[0].get("name", ticker)
         direction   = events_sorted[0].get("direction", "LONG")
-        tv_no_fx    = False
+        # FIX 15: currency is now tracked per-position from the trade row.
+        currency    = get_currency(events_sorted[0], events_sorted[0].get("yf_ticker", ticker))
 
         for e in events_sorted:
-            action = e.get("action", "").upper()
-            qty    = float(e.get("quantity", 0))
-            price  = float(e.get("price", 0))
+            action   = e.get("action", "").upper()
+            qty      = float(e.get("quantity", 0))
+            price    = float(e.get("price", 0))
+            # FIX 15: re-read currency on each event in case it changes (e.g. ADD row).
+            e_currency = get_currency(e, e.get("yf_ticker", yf_ticker))
 
             if action == "OPEN":
                 qty_held    = qty
@@ -252,27 +285,29 @@ def build_positions(trades, fx_rates, manual_map):
                 yf_ticker   = e.get("yf_ticker", yf_ticker)
                 asset_class = e.get("asset_class", asset_class)
                 name        = e.get("name", name)
-                tv_no_fx    = _is_tv_no_fx(e)
+                currency    = e_currency
 
             elif action == "ADD":
                 cost_basis += price * qty
                 qty_held   += qty
+                currency    = e_currency
 
             elif action == "REDUCE":
                 avg        = cost_basis / qty_held if qty_held else price
                 cost_basis -= avg * qty
                 qty_held   -= qty
 
-                currency     = get_currency(yf_ticker)
-                fx           = fx_rates.get(currency, 1.0)
-                effective_fx = 1.0 if tv_no_fx else fx
-
-                if is_lse(yf_ticker):
-                    avg_usd   = avg / 100 * effective_fx
-                    price_usd = price / 100 * effective_fx
+                fx           = fx_rates.get(fx_key(e_currency), 1.0)
+                # FIX 15: pence divide only for GBX; USD/GBP/EUR .L tickers use price as-is.
+                if is_lse_pence(e_currency):
+                    avg_base   = avg / 100
+                    price_base = price / 100
                 else:
-                    avg_usd   = avg * effective_fx
-                    price_usd = price * effective_fx
+                    avg_base   = avg
+                    price_base = price
+
+                avg_usd   = avg_base * fx
+                price_usd = price_base * fx
 
                 realised_usd  = (price_usd - avg_usd) * qty
                 cost_usd_sold = avg_usd * qty
@@ -281,8 +316,8 @@ def build_positions(trades, fx_rates, manual_map):
                     "ticker":           ticker,
                     "name":             name,
                     "qty":              qty,
-                    "entry_price":      round(avg_usd / effective_fx, 4) if effective_fx else round(avg, 4),
-                    "exit_price":       round(price_usd / effective_fx, 4) if effective_fx else round(price, 4),
+                    "entry_price":      round(avg_base, 4),
+                    "exit_price":       round(price_base, 4),
                     "realised_pnl_usd": round(realised_usd, 2),
                     "cost_usd_sold":    round(cost_usd_sold, 2),
                     "date":             e.get("date"),
@@ -295,19 +330,17 @@ def build_positions(trades, fx_rates, manual_map):
                 close_qty = qty_held
                 avg       = cost_basis / close_qty if close_qty else price
 
-                currency = get_currency(yf_ticker)
-                fx       = fx_rates.get(currency, 1.0)
-                effective_fx = 1.0 if tv_no_fx else fx
-
-                if is_lse(yf_ticker):
-                    avg_gbp   = avg / 100
-                    price_gbp = price / 100
+                fx = fx_rates.get(fx_key(e_currency), 1.0)
+                # FIX 15: pence divide only for GBX.
+                if is_lse_pence(e_currency):
+                    avg_base   = avg / 100
+                    price_base = price / 100
                 else:
-                    avg_gbp   = avg
-                    price_gbp = price
+                    avg_base   = avg
+                    price_base = price
 
-                avg_usd      = avg_gbp * effective_fx
-                price_usd    = price_gbp * effective_fx
+                avg_usd      = avg_base * fx
+                price_usd    = price_base * fx
                 realised_usd = (price_usd - avg_usd) * close_qty
                 cost_usd_sold = avg_usd * close_qty
 
@@ -315,8 +348,8 @@ def build_positions(trades, fx_rates, manual_map):
                     "ticker":           ticker,
                     "name":             name,
                     "qty":              close_qty,
-                    "entry_price":      round(avg_gbp, 4),
-                    "exit_price":       round(price_gbp, 4),
+                    "entry_price":      round(avg_base, 4),
+                    "exit_price":       round(price_base, 4),
                     "realised_pnl_usd": round(realised_usd, 2),
                     "cost_usd_sold":    round(cost_usd_sold, 2),
                     "date":             e.get("date"),
@@ -327,33 +360,36 @@ def build_positions(trades, fx_rates, manual_map):
                 cost_basis = 0.0
 
         if qty_held > 0:
-            live_price   = get_live_price(yf_ticker, manual_map)
-            currency     = get_currency(yf_ticker)
-            fx           = fx_rates.get(currency, 1.0)
-            effective_fx = 1.0 if tv_no_fx else fx
-            avg_price    = cost_basis / qty_held
+            live_price = get_live_price(yf_ticker, manual_map)
+            fx         = fx_rates.get(fx_key(currency), 1.0)
+            avg_price  = cost_basis / qty_held
 
-            if is_lse(yf_ticker):
+            # FIX 15: pence divide only for GBX.
+            if is_lse_pence(currency):
                 ap = avg_price / 100
             else:
                 ap = avg_price
 
             if live_price is not None:
-                if is_lse(yf_ticker):
-                    lp = normalize_lse_price(live_price, ap)
+                # FIX 15: normalize only for GBX pence feeds.
+                if is_lse_pence(currency):
+                    lp = normalize_gbx_price(live_price, ap)
                 else:
                     lp = live_price
-                cost_usd   = ap * qty_held * effective_fx
-                mv_usd     = lp * qty_held * effective_fx
+                cost_usd   = ap * qty_held * fx
+                mv_usd     = lp * qty_held * fx
                 unreal_pnl = mv_usd - cost_usd
                 unreal_pct = (lp - ap) / ap if ap else 0
             else:
                 lp         = ap
-                mv_usd     = ap * qty_held * effective_fx
+                mv_usd     = ap * qty_held * fx
                 cost_usd   = mv_usd
                 unreal_pnl = 0
                 unreal_pct = 0
 
+            # FIX 15: expose the canonical currency (GBX stays GBX so the frontend
+            # can show the correct denomination; FX exposure uses fx_key() to bucket
+            # GBX under GBP).
             open_positions.append({
                 "ticker":      ticker,
                 "name":        name,
@@ -417,12 +453,14 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
     hist_gbpusd = get_hist_fx("GBPUSD=X")
     hist_eurusd = get_hist_fx("EURUSD=X")
 
-    def fx_on_date(currency, dt, no_fx=False):
-        if no_fx or currency == "USD":
+    # FIX 15: fx_on_date uses fx_key() so GBX resolves to the GBP series.
+    def fx_on_date(currency, dt):
+        fk = fx_key(currency)
+        if fk == "USD":
             return 1.0
-        if currency == "GBP":
+        if fk == "GBP":
             series, fallback = hist_gbpusd, fx_rates.get("GBP", 1.0)
-        elif currency == "EUR":
+        elif fk == "EUR":
             series, fallback = hist_eurusd, fx_rates.get("EUR", 1.0)
         else:
             return 1.0
@@ -445,13 +483,13 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
         if r.get("date"):
             income_by_date[r["date"]] += r["cash_usd"]
 
-    holdings    = {}
-    cash        = starting
-    nav_series  = []
+    holdings     = {}
+    cash         = starting
+    nav_series   = []
     bench_series = []
-    bench_start = None
-    date_range  = pd.bdate_range(start=inception, end=today)
-    last_date   = date_range[-1] if len(date_range) > 0 else None
+    bench_start  = None
+    date_range   = pd.bdate_range(start=inception, end=today)
+    last_date    = date_range[-1] if len(date_range) > 0 else None
 
     for dt in date_range:
         ds = dt.strftime("%Y-%m-%d")
@@ -462,24 +500,25 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
             price    = float(e.get("price", 0))
             action   = e.get("action", "").upper()
             ytk      = e.get("yf_ticker", tk)
-            currency = get_currency(ytk)
-            no_fx    = _is_tv_no_fx(e)
-            fx_r     = fx_on_date(currency, dt, no_fx=no_fx)
-            price_gbp = price / 100 if is_lse(ytk) else price
-            p_usd    = price_gbp * fx_r
+            # FIX 15: currency from row, not suffix.
+            currency = get_currency(e, ytk)
+            fx_r     = fx_on_date(currency, dt)
+            # FIX 15: pence divide only for GBX.
+            price_base = price / 100 if is_lse_pence(currency) else price
+            p_usd      = price_base * fx_r
 
             if action == "OPEN":
-                holdings[tk] = {"qty": qty, "yf_ticker": ytk, "tv_no_fx": no_fx, "avg_cost_gbp": price_gbp}
+                holdings[tk] = {"qty": qty, "yf_ticker": ytk, "currency": currency, "avg_cost_base": price_base}
                 cash -= p_usd * qty
             elif action == "ADD":
                 if tk in holdings:
                     old       = holdings[tk]
                     total_qty = old["qty"] + qty
-                    avg_cost  = (old["avg_cost_gbp"] * old["qty"] + price_gbp * qty) / total_qty
+                    avg_cost  = (old["avg_cost_base"] * old["qty"] + price_base * qty) / total_qty
                     holdings[tk]["qty"] = total_qty
-                    holdings[tk]["avg_cost_gbp"] = avg_cost
+                    holdings[tk]["avg_cost_base"] = avg_cost
                 else:
-                    holdings[tk] = {"qty": qty, "yf_ticker": ytk, "tv_no_fx": no_fx, "avg_cost_gbp": price_gbp}
+                    holdings[tk] = {"qty": qty, "yf_ticker": ytk, "currency": currency, "avg_cost_base": price_base}
                 cash -= p_usd * qty
             elif action in ("REDUCE", "CLOSE"):
                 if tk in holdings:
@@ -500,15 +539,16 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
         else:
             port_val = cash
             for tk, h in holdings.items():
-                ytk          = h["yf_ticker"]
-                currency     = get_currency(ytk)
-                fx_r         = fx_on_date(currency, dt, no_fx=h.get("tv_no_fx", False))
-                avg_cost_gbp = h.get("avg_cost_gbp", 0)
+                ytk      = h["yf_ticker"]
+                currency = h.get("currency", get_currency({}, ytk))
+                fx_r     = fx_on_date(currency, dt)
+                avg_cost_base = h.get("avg_cost_base", 0)
                 try:
                     if ytk in prices.columns:
                         p_raw = float(prices.loc[:dt, ytk].iloc[-1])
-                        p_gbp = normalize_lse_price(p_raw, avg_cost_gbp) if is_lse(ytk) else p_raw
-                        port_val += p_gbp * fx_r * h["qty"]
+                        # FIX 15: normalize only for GBX pence feeds.
+                        p_base = normalize_gbx_price(p_raw, avg_cost_base) if is_lse_pence(currency) else p_raw
+                        port_val += p_base * fx_r * h["qty"]
                     else:
                         port_val += h["qty"]
                 except:
@@ -763,14 +803,15 @@ def portfolio():
             if cfg["starting_capital"] else 0
         )
 
-        # FIX 6: FX exposure — include residual cash in base currency bucket.
+        # FIX 6 + FIX 15: FX exposure — GBX positions bucketed under GBP.
         base_ccy = cfg.get("base_currency", "USD")
         fx_exposure = {}
-        for currency in ["USD", "GBP", "EUR"]:
-            ccy_mv = sum(p["mv_usd"] for p in open_pos if p["currency"] == currency)
-            if currency == base_ccy:
+        for ccy in ["USD", "GBP", "EUR"]:
+            # GBX maps to GBP bucket via fx_key()
+            ccy_mv = sum(p["mv_usd"] for p in open_pos if fx_key(p["currency"]) == ccy)
+            if ccy == base_ccy:
                 ccy_mv += cash
-            fx_exposure[currency + "_pct"] = round(ccy_mv / total_val * 100, 2) if total_val else 0
+            fx_exposure[ccy + "_pct"] = round(ccy_mv / total_val * 100, 2) if total_val else 0
 
         # -----------------------------------------------------------------
         # FIX 14: DISPLAY CURRENCY CONVERSION LAYER
@@ -978,25 +1019,28 @@ def _run_tests():
     else:
         print(f"  [PASS] Cash = {cash_test}")
 
-    # TEST 4: FX exposure sums to ~100%
+    # TEST 4: FX exposure sums to ~100% and GBX buckets under GBP
     test_positions = [
         {"currency": "USD", "mv_usd": 3000},
-        {"currency": "GBP", "mv_usd": 2000},
+        {"currency": "GBP", "mv_usd": 1000},
+        {"currency": "GBX", "mv_usd": 1000},  # should merge into GBP bucket
     ]
     test_cash = 5000.0
     test_total_val = sum(p["mv_usd"] for p in test_positions) + test_cash
     base_ccy = "USD"
     fx_exp = {}
     for ccy in ["USD", "GBP", "EUR"]:
-        mv = sum(p["mv_usd"] for p in test_positions if p["currency"] == ccy)
+        mv = sum(p["mv_usd"] for p in test_positions if fx_key(p["currency"]) == ccy)
         if ccy == base_ccy:
             mv += test_cash
         fx_exp[ccy + "_pct"] = round(mv / test_total_val * 100, 2)
     total_pct = sum(fx_exp.values())
     if abs(total_pct - 100.0) > 0.1:
         errors.append(f"FX exposure sum FAIL: {total_pct}% (expected ~100%)")
+    elif abs(fx_exp.get("GBP_pct", 0) - round(2000 / 10000 * 100, 2)) > 0.01:
+        errors.append(f"GBX->GBP bucket FAIL: GBP_pct={fx_exp.get('GBP_pct')}, expected 20.0")
     else:
-        print(f"  [PASS] FX exposure sums to {total_pct}%  {fx_exp}")
+        print(f"  [PASS] FX exposure sums to {total_pct}%  {fx_exp}  (GBX merged into GBP)")
 
     # TEST 5: parse_nav_overrides
     sample_rows = [
@@ -1141,6 +1185,56 @@ def _run_tests():
         errors.append(f"Display currency conversion FAIL: got {converted}, expected {expected_eur}")
     else:
         print(f"  [PASS] Display currency conversion: ${test_usd_val} -> €{converted} (rate: {test_usd_to_disp:.6f})")
+
+    # TEST 15a: get_currency() prefers explicit column over suffix
+    row_usd_lse = {"currency": "USD", "yf_ticker": "AGGG.L"}
+    row_gbx_lse = {"currency": "GBX", "yf_ticker": "INFR.L"}
+    row_gbp_lse = {"currency": "GBP", "yf_ticker": "GILG.L"}
+    row_blank   = {"currency": "",    "yf_ticker": "IWDA.AS"}
+    if get_currency(row_usd_lse, "AGGG.L") != "USD":
+        errors.append(f"TEST 15a FAIL: AGGG.L with currency=USD should return USD")
+    elif get_currency(row_gbx_lse, "INFR.L") != "GBX":
+        errors.append(f"TEST 15a FAIL: INFR.L with currency=GBX should return GBX")
+    elif get_currency(row_gbp_lse, "GILG.L") != "GBP":
+        errors.append(f"TEST 15a FAIL: GILG.L with currency=GBP should return GBP")
+    elif get_currency(row_blank, "IWDA.AS") != "EUR":
+        errors.append(f"TEST 15a FAIL: blank currency with .AS suffix should fall back to EUR")
+    else:
+        print("  [PASS] TEST 15a: get_currency() explicit column + fallback logic correct")
+
+    # TEST 15b: is_lse_pence() only fires for GBX
+    if not is_lse_pence("GBX"):
+        errors.append("TEST 15b FAIL: GBX should return True")
+    elif is_lse_pence("GBP"):
+        errors.append("TEST 15b FAIL: GBP should return False")
+    elif is_lse_pence("USD"):
+        errors.append("TEST 15b FAIL: USD should return False")
+    else:
+        print("  [PASS] TEST 15b: is_lse_pence() fires only for GBX")
+
+    # TEST 15c: fx_key() maps GBX -> GBP, others pass through
+    if fx_key("GBX") != "GBP":
+        errors.append("TEST 15c FAIL: fx_key(GBX) should be GBP")
+    elif fx_key("GBP") != "GBP":
+        errors.append("TEST 15c FAIL: fx_key(GBP) should be GBP")
+    elif fx_key("USD") != "USD":
+        errors.append("TEST 15c FAIL: fx_key(USD) should be USD")
+    elif fx_key("EUR") != "EUR":
+        errors.append("TEST 15c FAIL: fx_key(EUR) should be EUR")
+    else:
+        print("  [PASS] TEST 15c: fx_key() maps GBX->GBP, others unchanged")
+
+    # TEST 15d: pence divide applied for GBX, not for USD .L ticker
+    price_gbx = 947500.0   # WSML.L quoted in pence — but wait, WSML is USD in the new sheet
+    price_usd_lse = 446.05  # AGGG.L quoted in USD
+    gbx_base = price_gbx / 100 if is_lse_pence("GBX") else price_gbx
+    usd_base = price_usd_lse / 100 if is_lse_pence("USD") else price_usd_lse
+    if abs(gbx_base - 9475.0) > 0.01:
+        errors.append(f"TEST 15d FAIL: GBX pence divide wrong, got {gbx_base}")
+    elif abs(usd_base - 446.05) > 0.01:
+        errors.append(f"TEST 15d FAIL: USD .L should NOT be divided by 100, got {usd_base}")
+    else:
+        print(f"  [PASS] TEST 15d: GBX /100 = {gbx_base}, USD .L unchanged = {usd_base}")
 
     if errors:
         print("\n=== FAILURES ===")
