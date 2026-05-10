@@ -522,7 +522,7 @@ function TotalGrowthKpiCard(portPnl, portRetPct, benchRetPct) {
     const diff    = pNum - bNum;
     const beating = diff >= 0;
     const sign    = diff >= 0 ? '+' : '';
-    deltaHTML = `<div class="kpi-delta ${beating ? 'up' : 'down'}">${sign}${diff.toFixed(2)}pp vs V60A</div>`;
+    deltaHTML = `<div class="kpi-delta ${beating ? 'up' : 'down'}">${sign}${diff.toFixed(2)} vs V60A</div>`;
   }
   const retLine = pNum != null
     ? `<div class="kpi-delta ${pnlPos ? 'up' : 'down'}">${(pNum >= 0 ? '+' : '') + pNum.toFixed(2)}%</div>`
