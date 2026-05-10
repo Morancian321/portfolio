@@ -325,7 +325,7 @@ const MANDATE = {
   universe:    'Global multi-asset - equities, bonds, infrastructure, commodities, crypto',
   riskBudget:  'TODO: Define your max drawdown target and volatility target',
   timeHorizon: 'TODO: Define your investment time horizon',
-  benchmark:   'SPY (to be replaced with blended defensive benchmark)'
+  benchmark:   'V60A.DE (to be replaced with blended defensive benchmark)'
 };
 
 const ABOUT_CONTENT = {
@@ -501,9 +501,9 @@ function BenchmarkKpiCard(label, portVal, benchVal, higherIsBetter = true) {
     const diff = pNum - bNum;
     const beating = higherIsBetter ? diff >= 0 : diff <= 0;
     const sign = diff >= 0 ? '+' : '';
-    deltaHTML = `<div class="kpi-delta ${beating ? 'up' : 'down'}">${sign}${diff.toFixed(2)} vs SPY</div>`;
+    deltaHTML = `<div class="kpi-delta ${beating ? 'up' : 'down'}">${sign}${diff.toFixed(2)} vs V60A.DE</div>`;
   }
-  return `<div class="kpi-card"><div class="kpi-label">${label}</div><div class="kpi-value">${portFmt}</div><div class="kpi-delta neutral" style="font-size:.7rem">SPY: ${benchFmt}</div>${deltaHTML}</div>`;
+  return `<div class="kpi-card"><div class="kpi-label">${label}</div><div class="kpi-value">${portFmt}</div><div class="kpi-delta neutral" style="font-size:.7rem">V60A.DE: ${benchFmt}</div>${deltaHTML}</div>`;
 }
 function EmptyState(icon, title, message) {
   return `<div class="empty-state"><div class="empty-icon">${icon}<\/div><strong>${title}<\/strong><p>${message}<\/p><\/div>`;
@@ -829,9 +829,9 @@ function renderDashboard(root) {
     <!-- NAV Chart -->
     <div class="chart-card section-gap">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
-        <div class="chart-title" style="margin-bottom:0">NAV vs SPY - ${currentRange}</div>
+        <div class="chart-title" style="margin-bottom:0">NAV vs V60A.DE - ${currentRange}</div>
         <button class="btn btn-outline" style="font-size:.7rem" id="navBenchmarkInfo"
-                title="Note: SPY is used as a secondary benchmark. A blended defensive benchmark will be implemented in a future update.">
+                title="Note: V60A.DE is used as a secondary benchmark. A blended defensive benchmark will be implemented in a future update.">
           ⓘ Benchmark
         </button>
       </div>
@@ -912,7 +912,7 @@ function renderDashboard(root) {
               tension: .3
             },
             {
-              label: 'SPY',
+              label: 'V60A.DE',
               data: filteredBench.map(x => ({ x: x.date, y: x.value })),
               borderColor: '#d29922',
               borderWidth: 1.5,
