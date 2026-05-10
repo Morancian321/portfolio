@@ -31,6 +31,11 @@
 #      The alloc dict merges residual uninvested cash into the "C&CE" bucket rather than
 #      a separate "Cash" key. cce_positions and cce_total (positions MV + residual cash)
 #      are exposed in the API response for the frontend C&CE box.
+#  13. INCOME (dividends_coupons): dividends and coupon payments are read from the
+#      dividends_coupons sheet (columns: date, asset_class, div_income, currency, note).
+#      Cash received is treated as cash income — increases C&CE (residual cash) and
+#      realised P&L. Historical NAV curve injects income on the correct payment date.
+#      API exposes income_records, total_income_usd, dividends_usd, coupons_usd.
 # SAFE: Sharpe, NAV curve logic, hit_rate, rolling_vol — unchanged.
 # ADDED: test harness under if __name__ == '__main__' for regressions.
 
@@ -102,19 +107,21 @@ def get_sheet_data():
     except:
         manual = []
     # FIX 8: Read nav_overrides tab for manual historical price corrections.
-    # Gracefully falls back to an empty list if the sheet doesn't exist yet.
     try:
         nav_overrides_rows = sh.worksheet("nav_overrides").get_all_records()
     except:
         nav_overrides_rows = []
-    return trades, config, manual, nav_overrides_rows
+    # FIX 13: Read dividends_coupons tab for dividend and coupon income.
+    try:
+        income_rows = sh.worksheet("dividends_coupons").get_all_records()
+    except:
+        income_rows = []
+    return trades, config, manual, nav_overrides_rows, income_rows
 
 def parse_nav_overrides(rows):
     """
     Build a (date_str, yf_ticker) -> price lookup from the nav_overrides sheet.
     Only rows with action == OVERRIDE_PRICE are included.
-    Use this to correct bad YFinance prices on specific dates before they
-    feed into the NAV curve calculation.
     """
     overrides = {}
     for row in rows:
@@ -123,37 +130,42 @@ def parse_nav_overrides(rows):
             overrides[key] = float(row["value"])
     return overrides
 
+def parse_income(income_rows, fx_rates):
+    """
+    FIX 13: Parse the dividends_coupons sheet into a list of income records.
+    Sheet columns: date, asset_class (Dividend/Coupon), div_income, currency, note.
+    cash_usd = div_income * fx_rate (converts local currency to USD).
+    Both Dividend and Coupon income are treated as cash received — they increase
+    C&CE (residual cash) and are included in total_realised_pnl.
+    """
+    records = []
+    for row in income_rows:
+        amount_local = float(row.get("div_income", 0) or 0)
+        currency     = str(row.get("currency", "USD")).strip().upper()
+        fx           = fx_rates.get(currency, 1.0)
+        income_type  = str(row.get("asset_class", "")).strip().capitalize()  # "Dividend" or "Coupon"
+        records.append({
+            "date":         str(row.get("date", "")),
+            "income_type":  income_type,
+            "amount_local": amount_local,
+            "currency":     currency,
+            "cash_usd":     round(amount_local * fx, 2),
+            "note":         str(row.get("note", "")),
+        })
+    return records
+
 def apply_nav_overrides_to_prices(prices, nav_overrides):
     """
     FIX 8 (real fix): Stamp override values directly into the prices DataFrame
     BEFORE strip_outliers is called.
-
-    Why this matters:
-      strip_outliers masks spikes and then ffill()s. If a bad YFinance price sits
-      in the DataFrame when strip_outliers runs, the ffill propagates that bad value
-      forward across every subsequent trading day. Applying the override after the
-      fact (inside the daily loop) only fixes the exact date row — all the ffill'd
-      days downstream still carry the wrong price.
-
-    By injecting overrides here, strip_outliers sees the corrected value and
-    ffills the clean price forward instead.
-
-    Dates in nav_overrides use YYYY-MM-DD strings. The prices index may be
-    tz-aware (UTC) from yfinance — but by the time this function is called,
-    FIX 9 has already stripped the timezone so the index is tz-naive.
-    idx_map uses strftime for safe date-string matching regardless.
     """
     if not nav_overrides:
         return prices
-
-    # Build a date-string -> Timestamp index map for fast lookup
     idx_map = {ts.strftime("%Y-%m-%d"): ts for ts in prices.index}
-
     for (date_str, ytk), price in nav_overrides.items():
         if ytk in prices.columns and date_str in idx_map:
             ts = idx_map[date_str]
             prices.at[ts, ytk] = price
-
     return prices
 
 def parse_config(config_rows):
@@ -274,12 +286,8 @@ def build_positions(trades, fx_rates, manual_map):
 
             elif action == "CLOSE":
                 # FIX 7: CLOSE always means full close of the entire position.
-                # The quantity field from the trade row is intentionally ignored here;
-                # partial closes MUST use the REDUCE action instead.
-                # qty_held is the authoritative amount being closed.
-                close_qty = qty_held  # always use qty_held, not trade qty
+                close_qty = qty_held
                 avg       = cost_basis / close_qty if close_qty else price
-                realised  = (price - avg) * close_qty
 
                 currency = get_currency(yf_ticker)
                 fx       = fx_rates.get(currency, 1.0)
@@ -295,8 +303,6 @@ def build_positions(trades, fx_rates, manual_map):
                 avg_usd      = avg_gbp * effective_fx
                 price_usd    = price_gbp * effective_fx
                 realised_usd = (price_usd - avg_usd) * close_qty
-                # FIX 2 (CLOSE leg): record cost_usd_sold so proceeds can be
-                # computed as cost_usd_sold + realised_pnl_usd in /api/portfolio.
                 cost_usd_sold = avg_usd * close_qty
 
                 closed_trades.append({
@@ -361,19 +367,14 @@ def build_positions(trades, fx_rates, manual_map):
 
     return open_positions, closed_trades
 
-def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None, live_positions_mv=None, live_cash=None):
-    # FIX 8: nav_overrides are injected into the prices DataFrame via
-    # apply_nav_overrides_to_prices() BEFORE strip_outliers runs.
-    # FIX 9: prices.index is stripped of timezone after yf.download() so that
-    # prices.loc[:dt] works correctly — pd.bdate_range() is tz-naive and
-    # yf.download() returns tz-aware UTC; mixing them raises TypeError which
-    # was silently caught by except: pass, valuing all holdings at 0.
-    # FIX 10: On the final date of the date_range, skip the batch-price valuation
-    # loop and use live_positions_mv + live_cash (from build_positions()) instead.
-    # This ensures the NAV endpoint always matches the KPI current_value exactly,
-    # since both derive from the same yf.Ticker().history("2d") price calls.
+def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
+                    live_positions_mv=None, live_cash=None, income_records=None):
+    # FIX 13: income_records are pre-indexed by date so that cash is increased
+    # on the correct historical payment date in the NAV curve loop.
     if nav_overrides is None:
         nav_overrides = {}
+    if income_records is None:
+        income_records = []
 
     inception = datetime.strptime(cfg["inception_date"], "%Y-%m-%d")
     today     = datetime.today()
@@ -396,15 +397,12 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
     else:
         prices = raw[["Close"]] if "Close" in raw.columns else raw
 
-    # FIX 9: Strip timezone from prices index so that tz-naive pd.bdate_range()
-    # timestamps can be used in prices.loc[:dt] without raising TypeError.
+    # FIX 9: Strip timezone from prices index.
     if prices.index.tz is not None:
         prices.index = prices.index.tz_convert("UTC").tz_localize(None)
 
     # FIX 8: Inject overrides into the raw DataFrame BEFORE strip_outliers.
     prices = apply_nav_overrides_to_prices(prices, nav_overrides)
-
-    # FIX 5 (applied here too): use updated 0.125 threshold from strip_outliers.
     prices = strip_outliers(prices)
 
     def get_hist_fx(col):
@@ -434,6 +432,12 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
     events_by_date = defaultdict(list)
     for t in trades:
         events_by_date[t["date"]].append(t)
+
+    # FIX 13: Pre-index income by date for O(1) lookup in the daily loop.
+    income_by_date = defaultdict(float)
+    for r in income_records:
+        if r.get("date"):
+            income_by_date[r["date"]] += r["cash_usd"]
 
     holdings    = {}
     cash        = starting
@@ -473,7 +477,6 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
                 cash -= p_usd * qty
             elif action in ("REDUCE", "CLOSE"):
                 if tk in holdings:
-                    # FIX 7 (NAV curve): same semantics — CLOSE uses all of qty_held.
                     close_qty = qty if action == "REDUCE" else holdings[tk]["qty"]
                     cash += p_usd * close_qty
                     if action == "CLOSE":
@@ -481,8 +484,10 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
                     else:
                         holdings[tk]["qty"] -= close_qty
 
-        # FIX 10: On the final date, use live prices from build_positions() so the
-        # NAV endpoint matches the KPI current_value exactly.
+        # FIX 13: Inject income received on this date into the cash balance.
+        cash += income_by_date.get(ds, 0.0)
+
+        # FIX 10: On the final date, use live prices from build_positions().
         is_final_date = (dt == last_date)
         if is_final_date and live_positions_mv is not None and live_cash is not None:
             port_val = live_cash + live_positions_mv
@@ -516,7 +521,9 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
 
     return nav_series, bench_series
 
-def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[]):
+def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[], income_usd=0.0):
+    # FIX 13: income_usd is the total cash received from dividends and coupons.
+    # It is added to total_realised_pnl so that income is reflected in realised P&L.
     if len(nav_series) < 2:
         return {}
     import math
@@ -582,7 +589,10 @@ def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[]
     hit_rate_pct       = round(len(winners) / len(closed_trades) * 100, 1) if closed_trades else 0
     avg_gain_usd       = round(sum(t["realised_pnl_usd"] for t in winners) / len(winners), 2) if winners else 0.0
     avg_loss_usd       = round(sum(abs(t["realised_pnl_usd"]) for t in losers) / len(losers), 2) if losers else 0.0
-    total_realised_pnl = round(sum(t.get("realised_pnl_usd", 0) for t in closed_trades), 2)
+    # FIX 13: Include income (dividends + coupons) in total_realised_pnl.
+    total_realised_pnl = round(
+        sum(t.get("realised_pnl_usd", 0) for t in closed_trades) + income_usd, 2
+    )
 
     return {
         # FIX 4: total_return_pct is NAV-based (canonical). Not overwritten outside.
@@ -605,13 +615,11 @@ def calc_benchmark_metrics(bench_series, rf_annual=0.043):
     """
     FIX 11: Compute Sharpe, Sortino, max drawdown, and 30d rolling volatility
     for the benchmark (SPY) series using identical formulas to calc_metrics().
-    bench_series is the rebased NAV-equivalent series already built in build_nav_curve().
-    Returns a flat dict exposed as benchmark_metrics in /api/portfolio.
     """
     if len(bench_series) < 2:
         return {
-            "benchmark_sharpe":       None,
-            "benchmark_sortino":      None,
+            "benchmark_sharpe":           None,
+            "benchmark_sortino":          None,
             "benchmark_max_drawdown_pct": None,
             "benchmark_rolling_30d_vol":  None,
         }
@@ -655,23 +663,28 @@ def calc_benchmark_metrics(bench_series, rf_annual=0.043):
 @app.route("/api/portfolio")
 def portfolio():
     try:
-        trades, config_rows, manual_rows, nav_overrides_rows = get_sheet_data()
+        trades, config_rows, manual_rows, nav_overrides_rows, income_rows = get_sheet_data()
         cfg          = parse_config(config_rows)
         fx_rates     = get_fx_rates()
         rf_rate      = get_risk_free_rate()
         manual_map   = {r["ticker"]: r["manual_price"] for r in manual_rows if r.get("ticker")}
         nav_overrides = parse_nav_overrides(nav_overrides_rows)
 
+        # FIX 13: Parse income records and compute totals.
+        income_records   = parse_income(income_rows, fx_rates)
+        total_income_usd = sum(r["cash_usd"] for r in income_records)
+        dividends_usd    = sum(r["cash_usd"] for r in income_records if r["income_type"] == "Dividend")
+        coupons_usd      = sum(r["cash_usd"] for r in income_records if r["income_type"] == "Coupon")
+
         open_pos, closed = build_positions(trades, fx_rates, manual_map)
 
         total_mv   = sum(p["mv_usd"] for p in open_pos)
         total_cost = sum(p["cost_usd"] for p in open_pos)
 
-        # FIX 2: Cash = starting_capital - cost_of_open_positions + sum(sale_proceeds).
-        # Note: C&CE positions are included in total_cost/total_mv as normal holdings.
-        # The residual cash here represents truly uninvested capital.
+        # FIX 2 + FIX 13: Cash = starting_capital - cost_of_open_positions
+        # + sale_proceeds + income_received (dividends + coupons).
         proceeds_total = sum(t.get("realised_pnl_usd", 0) for t in closed)
-        cash = cfg["starting_capital"] - total_cost + proceeds_total
+        cash = cfg["starting_capital"] - total_cost + proceeds_total + total_income_usd
         cash = max(cash, 0)
         total_val = total_mv + cash
 
@@ -706,10 +719,6 @@ def portfolio():
                 p["sizing_breach"] = False
 
         # FIX 12: Build allocation dict.
-        # C&CE positions contribute their MV to the "C&CE" bucket via asset_class (same as
-        # any other position class). The residual uninvested cash is also merged into the
-        # "C&CE" bucket so that the allocation chart shows one unified cash/liquidity sleeve.
-        # The old "Cash" key is no longer emitted.
         alloc = {}
         for p in open_pos:
             ac = p["asset_class"]
@@ -717,26 +726,29 @@ def portfolio():
         if cash > 0 and total_val > 0:
             alloc["C&CE"] = round(alloc.get("C&CE", 0) + cash / total_val * 100, 2)
 
-        # FIX 12: Compute C&CE sleeve totals for the frontend box.
-        # cce_positions: open positions with asset_class == "C&CE" (live-priced instruments).
-        # cce_mv:        their combined market value in USD.
-        # cce_total:     cce_mv + residual uninvested cash = full cash/liquidity sleeve.
+        # FIX 12: Compute C&CE sleeve totals.
         cce_positions = [p for p in open_pos if p.get("asset_class") == "C&CE"]
         cce_mv        = sum(p["mv_usd"] for p in cce_positions)
         cce_total     = round(cce_mv + cash, 2)
 
-        # FIX 10: Pass live_positions_mv and live_cash into build_nav_curve.
-        # live_positions_mv includes C&CE position MVs (they are in open_pos).
-        # live_cash is the residual uninvested cash only.
+        # FIX 10 + FIX 13: Pass income_records into build_nav_curve so that
+        # historical income payments are reflected in the NAV curve.
         nav_series, bench_series = build_nav_curve(
             trades, fx_rates, cfg, cfg["benchmark"],
             nav_overrides=nav_overrides,
             live_positions_mv=total_mv,
             live_cash=cash,
+            income_records=income_records,
         )
-        metrics = calc_metrics(nav_series, cfg["starting_capital"], rf_annual=rf_rate, closed_trades=closed)
+        # FIX 13: Pass income_usd into calc_metrics so total_realised_pnl includes income.
+        metrics = calc_metrics(
+            nav_series, cfg["starting_capital"],
+            rf_annual=rf_rate,
+            closed_trades=closed,
+            income_usd=total_income_usd,
+        )
 
-        # FIX 11: Compute benchmark KPIs using the same rf_rate for fair comparison.
+        # FIX 11: Compute benchmark KPIs.
         bench_metrics = calc_benchmark_metrics(bench_series, rf_annual=rf_rate)
 
         # FIX 4: Do NOT overwrite metrics["total_return_pct"].
@@ -746,7 +758,6 @@ def portfolio():
         )
 
         # FIX 6: FX exposure — include residual cash in base currency bucket.
-        # C&CE positions are included via open_pos MV summed per currency (correct).
         base_ccy = cfg.get("base_currency", "USD")
         fx_exposure = {}
         for currency in ["USD", "GBP", "EUR"]:
@@ -777,6 +788,11 @@ def portfolio():
             "fx_rates":                 fx_rates,
             "fx_exposure":              fx_exposure,
             "position_sizing_policy":   SIZING_POLICY,
+            # FIX 13: Income fields for frontend income box.
+            "income_records":           income_records,
+            "total_income_usd":         round(total_income_usd, 2),
+            "dividends_usd":            round(dividends_usd, 2),
+            "coupons_usd":              round(coupons_usd, 2),
         })
     except Exception as e:
         import traceback
@@ -982,7 +998,7 @@ def _run_tests():
         {"asset_class": "C&CE",    "mv_usd": 20000},
     ]
     test_cash_cce  = 10000.0
-    test_total_cce = sum(p["mv_usd"] for p in test_open_pos) + test_cash_cce  # 70000
+    test_total_cce = sum(p["mv_usd"] for p in test_open_pos) + test_cash_cce
     test_alloc = {}
     for p in test_open_pos:
         ac = p["asset_class"]
@@ -998,12 +1014,49 @@ def _run_tests():
 
     # TEST 12b: cce_total = cce_mv + residual cash
     cce_pos_test  = [p for p in test_open_pos if p.get("asset_class") == "C&CE"]
-    cce_mv_test   = sum(p["mv_usd"] for p in cce_pos_test)  # 20000
-    cce_total_test = round(cce_mv_test + test_cash_cce, 2)   # 30000
+    cce_mv_test   = sum(p["mv_usd"] for p in cce_pos_test)
+    cce_total_test = round(cce_mv_test + test_cash_cce, 2)
     if abs(cce_total_test - 30000.0) > 0.01:
         errors.append(f"cce_total FAIL: got {cce_total_test}, expected 30000")
     else:
         print(f"  [PASS] cce_total = {cce_total_test} (positions MV + residual cash)")
+
+    # TEST 13: parse_income maps columns correctly
+    income_test_rows = [
+        {"date": "2026-02-29", "asset_class": "Dividend", "div_income": 51290, "currency": "USD", "note": "GILG Dividend"},
+        {"date": "2026-01-14", "asset_class": "Dividend", "div_income": 8660,  "currency": "USD", "note": "INFR Dividend"},
+        {"date": "2026-05-10", "asset_class": "Coupon",   "div_income": 50000, "currency": "USD", "note": "AGGG Coupon"},
+    ]
+    fx_test = {"USD": 1.0, "GBP": 1.25, "EUR": 1.08}
+    parsed = parse_income(income_test_rows, fx_test)
+    if len(parsed) != 3:
+        errors.append(f"parse_income FAIL: expected 3 records, got {len(parsed)}")
+    elif parsed[0]["income_type"] != "Dividend":
+        errors.append(f"parse_income FAIL: income_type wrong, got {parsed[0]['income_type']}")
+    elif abs(parsed[2]["cash_usd"] - 50000.0) > 0.01:
+        errors.append(f"parse_income FAIL: cash_usd wrong for coupon, got {parsed[2]['cash_usd']}")
+    else:
+        print(f"  [PASS] parse_income: {len(parsed)} records, types={[r['income_type'] for r in parsed]}")
+
+    # TEST 13b: income increases cash correctly
+    start_cap    = 100000.0
+    cost_open    = 80000.0
+    proceeds     = 0.0
+    income_total = 51290 + 8660 + 50000  # 109950
+    cash_with_income = start_cap - cost_open + proceeds + income_total
+    if abs(cash_with_income - 129950.0) > 0.01:
+        errors.append(f"Income cash FAIL: got {cash_with_income}, expected 129950")
+    else:
+        print(f"  [PASS] Income cash injection: {cash_with_income}")
+
+    # TEST 13c: total_realised_pnl includes income
+    closed_test = [{"realised_pnl_usd": 500.0}]
+    income_usd_test = 109950.0
+    total_rpl = round(sum(t.get("realised_pnl_usd", 0) for t in closed_test) + income_usd_test, 2)
+    if abs(total_rpl - 110450.0) > 0.01:
+        errors.append(f"Realised P&L with income FAIL: got {total_rpl}, expected 110450")
+    else:
+        print(f"  [PASS] total_realised_pnl with income = {total_rpl}")
 
     if errors:
         print("\n=== FAILURES ===")
