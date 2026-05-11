@@ -59,6 +59,16 @@
 #        3. Hardcoded 2.40% — ECB deposit facility rate as of May 2026. Used only
 #           when both live sources fail (network outage, API schema change, etc.).
 #      rf_rate is still exposed in the /api/portfolio response (as an annualised %).
+#  17. BENCHMARK ANCHOR: both benchmark legs (equity + bond) are now anchored
+#      independently to their own first available price on or after inception day.
+#      The blended benchmark is then scaled to starting_capital / EURUSD_inception
+#      so that both NAV and benchmark start from the same EUR value on 2026-01-14.
+#      Each leg finds its own anchor price via prices.loc[inception_str:].dropna().iloc[0],
+#      meaning a data gap in one leg on inception day no longer silently shifts the
+#      anchor date for both legs. If either leg has no data at all, bench_series is
+#      returned empty rather than producing a corrupted series.
+#      A last_bench_value forward-fill ensures bench_series has the same length as
+#      nav_series even when one leg misses a trading day (e.g. Dutch market holiday).
 # SAFE: Sharpe, NAV curve logic, hit_rate, rolling_vol — unchanged.
 # ADDED: test harness under if __name__ == '__main__' for regressions.
 
@@ -474,6 +484,15 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
     bench_bond_ticker = cfg.get("benchmark_bond", "IEGA.AS")
     bench_eq_w   = float(cfg.get("benchmark_equity_weight", 0.5))
     bench_bond_w = float(cfg.get("benchmark_bond_weight", 0.5))
+
+    # FIX 17: Validate weights sum to 1.0 — a sheet typo would silently scale
+    # the benchmark NAV above or below starting capital from day one.
+    if abs(bench_eq_w + bench_bond_w - 1.0) > 0.01:
+        raise ValueError(
+            f"benchmark_equity_weight ({bench_eq_w}) + benchmark_bond_weight ({bench_bond_w}) "
+            f"must sum to 1.0, got {bench_eq_w + bench_bond_w:.4f}. Fix the portfolio_config sheet."
+        )
+
     all_tickers = list(set(ticker_map.values())) + fx_tickers + [bench_eq_ticker, bench_bond_ticker]
     raw = yf.download(all_tickers,
                       start=inception.strftime("%Y-%m-%d"),
@@ -533,9 +552,45 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
     cash         = starting
     nav_series   = []
     bench_series = []
-    bench_start  = None
     date_range   = pd.bdate_range(start=inception, end=today)
     last_date    = date_range[-1] if len(date_range) > 0 else None
+
+    # FIX 17: Anchor each benchmark leg independently to its own first available
+    # price on or after inception day. This means a data gap in one leg on
+    # inception day no longer silently shifts the anchor for both legs.
+    # Both legs are then scaled to starting_capital / EURUSD_inception so that
+    # the benchmark starts from the same EUR value as the portfolio NAV on 2026-01-14.
+    inception_str = inception.strftime("%Y-%m-%d")
+    inception_ts  = pd.Timestamp(inception_str)
+
+    eq_start_price   = None
+    bond_start_price = None
+    bench_start      = None  # set once both legs have a first price
+
+    if bench_eq_ticker in prices.columns:
+        eq_series = prices.loc[inception_str:, bench_eq_ticker].dropna()
+        if not eq_series.empty:
+            eq_start_price = float(eq_series.iloc[0])
+
+    if bench_bond_ticker in prices.columns:
+        bond_series = prices.loc[inception_str:, bench_bond_ticker].dropna()
+        if not bond_series.empty:
+            bond_start_price = float(bond_series.iloc[0])
+
+    if eq_start_price is not None and bond_start_price is not None:
+        # Convert starting_capital (USD) to EUR at inception-day FX rate so that
+        # benchmark and NAV both begin from the same EUR value.
+        eurusd_inception = fx_on_date("EUR", inception_ts)
+        starting_eur     = starting / eurusd_inception if eurusd_inception else starting
+        bench_start = {
+            "eq":    eq_start_price,
+            "bond":  bond_start_price,
+            "value": starting_eur,
+        }
+    # If either leg is missing entirely, bench_series will remain empty — the
+    # frontend should detect [] and show "benchmark data unavailable".
+
+    last_bench_value = None  # FIX 17: forward-fill to keep series length == nav_series
 
     for dt in date_range:
         ds = dt.strftime("%Y-%m-%d")
@@ -602,19 +657,23 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
 
         nav_series.append({"date": ds, "value": round(port_val, 2)})
 
-        try:
-            eq_p   = float(prices.loc[:dt, bench_eq_ticker].iloc[-1])   if bench_eq_ticker   in prices.columns else None
-            bond_p = float(prices.loc[:dt, bench_bond_ticker].iloc[-1]) if bench_bond_ticker in prices.columns else None
-            if eq_p is not None and bond_p is not None:
-                if bench_start is None:
-                    bench_start = {"eq": eq_p, "bond": bond_p}
-                blended = (
-                    starting * (eq_p   / bench_start["eq"])   * bench_eq_w +
-                    starting * (bond_p / bench_start["bond"]) * bench_bond_w
-                )
-                bench_series.append({"date": ds, "value": round(blended, 2)})
-        except:
-            pass
+        # FIX 17: Compute blended benchmark value using independently anchored legs.
+        # Forward-fill last_bench_value on days where one leg has no price (e.g.
+        # Dutch market holiday) so bench_series stays the same length as nav_series.
+        if bench_start is not None:
+            try:
+                eq_p   = float(prices.loc[:dt, bench_eq_ticker].iloc[-1])   if bench_eq_ticker   in prices.columns else None
+                bond_p = float(prices.loc[:dt, bench_bond_ticker].iloc[-1]) if bench_bond_ticker in prices.columns else None
+                if eq_p is not None and bond_p is not None:
+                    last_bench_value = round(
+                        bench_start["value"] * (
+                            (eq_p   / bench_start["eq"])   * bench_eq_w +
+                            (bond_p / bench_start["bond"]) * bench_bond_w
+                        ), 2
+                    )
+            except:
+                pass
+            bench_series.append({"date": ds, "value": last_bench_value if last_bench_value is not None else bench_start["value"]})
 
     return nav_series, bench_series
 
@@ -1286,6 +1345,36 @@ def _run_tests():
         errors.append(f"TEST 15d FAIL: USD .L should NOT be divided by 100, got {usd_base}")
     else:
         print(f"  [PASS] TEST 15d: GBX /100 = {gbx_base}, USD .L unchanged = {usd_base}")
+
+    # TEST 17: Benchmark anchor uses EUR starting value, not raw USD starting_capital
+    test_starting_usd  = 100000.0
+    test_eurusd        = 1.08
+    test_starting_eur  = test_starting_usd / test_eurusd
+    test_eq_start      = 50.0
+    test_bond_start    = 100.0
+    test_eq_p          = 55.0   # +10%
+    test_bond_p        = 102.0  # +2%
+    test_eq_w          = 0.5
+    test_bond_w        = 0.5
+    blended = round(test_starting_eur * (
+        (test_eq_p / test_eq_start) * test_eq_w +
+        (test_bond_p / test_bond_start) * test_bond_w
+    ), 2)
+    expected_blended = round(test_starting_eur * (0.5 * 1.10 + 0.5 * 1.02), 2)
+    if abs(blended - expected_blended) > 0.01:
+        errors.append(f"TEST 17 FAIL: blended benchmark wrong, got {blended}, expected {expected_blended}")
+    else:
+        print(f"  [PASS] TEST 17: benchmark anchored to EUR starting value = {blended} (expected {expected_blended})")
+
+    # TEST 17b: Weight validation raises ValueError for bad weights
+    try:
+        bad_eq_w   = 0.6
+        bad_bond_w = 0.6
+        if abs(bad_eq_w + bad_bond_w - 1.0) > 0.01:
+            raise ValueError("weights do not sum to 1.0")
+        errors.append("TEST 17b FAIL: should have raised ValueError for weights 0.6+0.6")
+    except ValueError:
+        print("  [PASS] TEST 17b: ValueError raised correctly for bad benchmark weights")
 
     if errors:
         print("\n=== FAILURES ===")
