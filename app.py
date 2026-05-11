@@ -220,11 +220,14 @@ def parse_config(config_rows):
     cfg = {r["key"]: r["value"] for r in config_rows}
     return {
         "starting_capital": float(cfg.get("starting_capital", 100000)),
-        "base_currency":    cfg.get("base_currency", "USD"),
-        "inception_date":   cfg.get("inception_date", "2026-01-14"),
-        "benchmark":        cfg.get("benchmark", "SPY"),
-        "portfolio_name":   cfg.get("portfolio_name", "Investment Portfolio"),
-        "display_currency": cfg.get("display_currency", "USD"),  # FIX 14
+        "base_currency": cfg.get("base_currency", "USD"),
+        "inception_date": cfg.get("inception_date", "2026-01-14"),
+        "benchmark": cfg.get("benchmark", "IEMU.L"),
+        "benchmark_bond": cfg.get("benchmark_bond", "IEGA.AS"),
+        "benchmark_equity_weight": float(cfg.get("benchmark_equity_weight", 0.5)),
+        "benchmark_bond_weight": float(cfg.get("benchmark_bond_weight", 0.5)),
+        "portfolio_name": cfg.get("portfolio_name", "Investment Portfolio"),
+        "display_currency": cfg.get("display_currency", "USD"), # FIX 14
     }
 
 def get_fx_rates():
@@ -467,7 +470,11 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
             ticker_map[t["ticker"]] = t.get("yf_ticker")
 
     fx_tickers  = ["GBPUSD=X", "EURUSD=X"]
-    all_tickers = list(set(ticker_map.values())) + fx_tickers + [benchmark_ticker]
+    bench_eq_ticker   = cfg.get("benchmark", "IEMU.L")
+    bench_bond_ticker = cfg.get("benchmark_bond", "IEGA.AS")
+    bench_eq_w   = float(cfg.get("benchmark_equity_weight", 0.5))
+    bench_bond_w = float(cfg.get("benchmark_bond_weight", 0.5))
+    all_tickers = list(set(ticker_map.values())) + fx_tickers + [bench_eq_ticker, bench_bond_ticker]
     raw = yf.download(all_tickers,
                       start=inception.strftime("%Y-%m-%d"),
                       end=(today + timedelta(days=1)).strftime("%Y-%m-%d"),
@@ -596,11 +603,16 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
         nav_series.append({"date": ds, "value": round(port_val, 2)})
 
         try:
-            if benchmark_ticker in prices.columns:
-                bp = float(prices.loc[:dt, benchmark_ticker].iloc[-1])
+            eq_p   = float(prices.loc[:dt, bench_eq_ticker].iloc[-1])   if bench_eq_ticker   in prices.columns else None
+            bond_p = float(prices.loc[:dt, bench_bond_ticker].iloc[-1]) if bench_bond_ticker in prices.columns else None
+            if eq_p is not None and bond_p is not None:
                 if bench_start is None:
-                    bench_start = bp
-                bench_series.append({"date": ds, "value": round(starting * (bp / bench_start), 2)})
+                    bench_start = {"eq": eq_p, "bond": bond_p}
+                blended = (
+                    starting * (eq_p   / bench_start["eq"])   * bench_eq_w +
+                    starting * (bond_p / bench_start["bond"]) * bench_bond_w
+                )
+                bench_series.append({"date": ds, "value": round(blended, 2)})
         except:
             pass
 
