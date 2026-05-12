@@ -470,7 +470,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
             ticker_map[t["ticker"]] = t.get("yf_ticker")
 
     fx_tickers  = ["GBPUSD=X", "EURUSD=X"]
-    bench_eq_ticker   = cfg.get("benchmark", "IEMU.L")
+    bench_eq_ticker   = cfg.get("benchmark", "CEMU.AS")
     bench_bond_ticker = cfg.get("benchmark_bond", "IEGA.AS")
     bench_eq_w   = float(cfg.get("benchmark_equity_weight", 0.5))
     bench_bond_w = float(cfg.get("benchmark_bond_weight", 0.5))
