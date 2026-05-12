@@ -226,6 +226,29 @@ tr.row-loss td:last-child{color:var(--color-error)}
 .cce-stat-label{font-size:.65rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--color-text-muted)}
 .cce-stat-value{font-size:.9rem;font-weight:700;font-variant-numeric:tabular-nums;color:var(--color-text)}
 .cce-total-value{font-size:1rem;font-weight:700;color:var(--color-primary);font-variant-numeric:tabular-nums}
+.cce-total-value{font-size:1rem;font-weight:700;color:var(--color-primary);font-variant-numeric:tabular-nums}
+
+/* —— Benchmark info popover —————————————————————————————— */
+.benchmark-info-wrap{position:relative;display:inline-block}
+.benchmark-popover{
+  display:none;
+  position:absolute;
+  right:0;
+  top:calc(100% + 8px);
+  width:260px;
+  padding:1rem;
+  font-size:.82rem;
+  line-height:1.6;
+  z-index:100;
+  background:var(--color-surface);
+  border:1px solid var(--color-border);
+  border-radius:var(--radius-md);
+  box-shadow:var(--shadow-md);
+  color:var(--color-text);
+}
+.benchmark-info-wrap:hover .benchmark-popover,
+.benchmark-info-wrap:focus-within .benchmark-popover{display:block}
+
 </style>
 </head>
 <body>
@@ -325,7 +348,7 @@ const MANDATE = {
   universe:    'Global multi-asset - equities, bonds, infrastructure, commodities, crypto',
   riskBudget:  'TODO: Define your max drawdown target and volatility target',
   timeHorizon: 'TODO: Define your investment time horizon',
-  benchmark:   'SPY (to be replaced with blended defensive benchmark)'
+  benchmark: '50:50 CEMU.AS / IEGA.AS — Blended EUR Equity & Fixed Income Benchmark'
 };
 
 const ABOUT_CONTENT = {
@@ -496,14 +519,14 @@ function BenchmarkKpiCard(label, portVal, benchVal, higherIsBetter = true) {
   const bNum = benchVal != null ? Number(benchVal) : null;
   const portFmt = pNum != null ? pNum.toFixed(2) : '-';
   const benchFmt = bNum != null ? bNum.toFixed(2) : '-';
-  let deltaHTML = '';
+  let deltaHTML = `<div class="kpi-delta ${beating ? 'up' : 'down'}">${sign}${diff.toFixed(2)} vs Benchmark</div>`;
   if (pNum != null && bNum != null) {
     const diff = pNum - bNum;
     const beating = higherIsBetter ? diff >= 0 : diff <= 0;
     const sign = diff >= 0 ? '+' : '';
     deltaHTML = `<div class="kpi-delta ${beating ? 'up' : 'down'}">${sign}${diff.toFixed(2)} vs SPY</div>`;
   }
-  return `<div class="kpi-card"><div class="kpi-label">${label}</div><div class="kpi-value">${portFmt}</div><div class="kpi-delta neutral" style="font-size:.7rem">SPY: ${benchFmt}</div>${deltaHTML}</div>`;
+  return `<div class="kpi-card"><div class="kpi-label">${label}</div><div class="kpi-value">${portFmt}</div><div class="kpi-delta neutral" style="font-size:.7rem">Benchmark: ${benchFmt}</div>${deltaHTML}</div>`;
 }
 function EmptyState(icon, title, message) {
   return `<div class="empty-state"><div class="empty-icon">${icon}<\/div><strong>${title}<\/strong><p>${message}<\/p><\/div>`;
@@ -829,14 +852,20 @@ function renderDashboard(root) {
     <!-- NAV Chart -->
     <div class="chart-card section-gap">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
-        <div class="chart-title" style="margin-bottom:0">NAV vs SPY - ${currentRange}</div>
-        <button class="btn btn-outline" style="font-size:.7rem" id="navBenchmarkInfo"
-                title="Note: SPY is used as a secondary benchmark. A blended defensive benchmark will be implemented in a future update.">
-          ⓘ Benchmark
-        </button>
+        <div class="chart-title" style="margin-bottom:0">NAV vs 50:50 Equity · Debt Benchmark — ${currentRange}</div>
+        <div class="benchmark-info-wrap">
+          <button class="btn btn-outline" style="font-size:.7rem" id="navBenchmarkInfo">ⓘ Benchmark</button>
+          <div class="benchmark-popover">
+            <strong>Blended 50:50 Benchmark</strong>
+            <hr style="border-color:var(--color-border);margin:.5rem 0">
+            <p style="margin:.5rem 0"><strong>Equity (50%)</strong><br>CEMU.AS · iShares Core MSCI EMU UCITS ETF<br><span style="color:var(--color-text-muted)">EUR-listed · Euronext Amsterdam</span></p>
+            <p style="margin:.5rem 0"><strong>Fixed Income (50%)</strong><br>IEGA.AS · iShares Core € Aggregate Bond UCITS ETF<br><span style="color:var(--color-text-muted)">EUR-listed · Euronext Amsterdam</span></p>
+            <p style="margin:.5rem 0"><strong>Risk-free rate:</strong> ECB €STR (live)<br><strong>Base currency:</strong> EUR</p>
+          </div>
+        </div>
       </div>
       ${RangePills(currentRange, 'setDashRange')}
-      <div class="chart-wrap" style="height:300px"><canvas id="dashNavCanvas"></canvas></div>
+      <div class="chart-wrap" style="height:300px">anvas id="dashNavCanvas"></canvas></div>
     </div>
 
     <!-- Allocation Section -->
@@ -912,7 +941,7 @@ function renderDashboard(root) {
               tension: .3
             },
             {
-              label: 'SPY',
+              label: '50:50 Benchmark',
               data: filteredBench.map(x => ({ x: x.date, y: x.value })),
               borderColor: '#d29922',
               borderWidth: 1.5,
