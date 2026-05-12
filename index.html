@@ -228,7 +228,7 @@ tr.row-loss td:last-child{color:var(--color-error)}
 .cce-total-value{font-size:1rem;font-weight:700;color:var(--color-primary);font-variant-numeric:tabular-nums}
 .cce-total-value{font-size:1rem;font-weight:700;color:var(--color-primary);font-variant-numeric:tabular-nums}
 
-/* —— Benchmark info popover —————————————————————————————— */
+/* -- Benchmark info popover ------------------------------ */
 .benchmark-info-wrap{position:relative;display:inline-block}
 .benchmark-popover{
   display:none;
@@ -348,7 +348,7 @@ const MANDATE = {
   universe:    'Global multi-asset - equities, bonds, infrastructure, commodities, crypto',
   riskBudget:  'TODO: Define your max drawdown target and volatility target',
   timeHorizon: 'TODO: Define your investment time horizon',
-  benchmark: '50:50 CEMU.AS / IEGA.AS — Blended EUR Equity & Fixed Income Benchmark'
+  benchmark: '50:50 CEMU.AS / IEGA.AS - Blended EUR Equity & Fixed Income Benchmark'
 };
 
 const ABOUT_CONTENT = {
@@ -852,14 +852,14 @@ function renderDashboard(root) {
     <!-- NAV Chart -->
     <div class="chart-card section-gap">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
-        <div class="chart-title" style="margin-bottom:0">NAV vs 50:50 Equity · Debt Benchmark — ${currentRange}</div>
+        <div class="chart-title" style="margin-bottom:0">NAV vs 50:50 Equity:Debt Benchmark - ${currentRange}</div>
         <div class="benchmark-info-wrap">
           <button class="btn btn-outline" style="font-size:.7rem" id="navBenchmarkInfo">ⓘ Benchmark</button>
           <div class="benchmark-popover">
             <strong>Blended 50:50 Benchmark</strong>
             <hr style="border-color:var(--color-border);margin:.5rem 0">
-            <p style="margin:.5rem 0"><strong>Equity (50%)</strong><br>CEMU.AS · iShares Core MSCI EMU UCITS ETF<br><span style="color:var(--color-text-muted)">EUR-listed · Euronext Amsterdam</span></p>
-            <p style="margin:.5rem 0"><strong>Fixed Income (50%)</strong><br>IEGA.AS · iShares Core € Aggregate Bond UCITS ETF<br><span style="color:var(--color-text-muted)">EUR-listed · Euronext Amsterdam</span></p>
+            <p style="margin:.5rem 0"><strong>Equity (50%)</strong><br>IWDS.AS · iShares Core MSCI World UCITS ETF<br><span style="color:var(--color-text-muted)">EUR-listed · Euronext Amsterdam</span></p>
+            <p style="margin:.5rem 0"><strong>Fixed Income (50%)</strong><br>AGGH.AS · iShares Core Global Aggregate Bond UCITS ETF EUR Hedged (Acc)<br><span style="color:var(--color-text-muted)">EUR-listed · Euronext Amsterdam</span></p>
             <p style="margin:.5rem 0"><strong>Risk-free rate:</strong> ECB €STR (live)<br><strong>Base currency:</strong> EUR</p>
           </div>
         </div>
