@@ -519,12 +519,12 @@ function BenchmarkKpiCard(label, portVal, benchVal, higherIsBetter = true) {
   const bNum = benchVal != null ? Number(benchVal) : null;
   const portFmt = pNum != null ? pNum.toFixed(2) : '-';
   const benchFmt = bNum != null ? bNum.toFixed(2) : '-';
-  let deltaHTML = `<div class="kpi-delta ${beating ? 'up' : 'down'}">${sign}${diff.toFixed(2)} vs Benchmark</div>`;
+  let deltaHTML = '';
   if (pNum != null && bNum != null) {
     const diff = pNum - bNum;
     const beating = higherIsBetter ? diff >= 0 : diff <= 0;
     const sign = diff >= 0 ? '+' : '';
-    deltaHTML = `<div class="kpi-delta ${beating ? 'up' : 'down'}">${sign}${diff.toFixed(2)} vs SPY</div>`;
+    deltaHTML = `<div class="kpi-delta ${beating ? 'up' : 'down'}">${sign}${diff.toFixed(2)} vs Benchmark</div>`;
   }
   return `<div class="kpi-card"><div class="kpi-label">${label}</div><div class="kpi-value">${portFmt}</div><div class="kpi-delta neutral" style="font-size:.7rem">Benchmark: ${benchFmt}</div>${deltaHTML}</div>`;
 }
