@@ -80,7 +80,7 @@ CREDS_FILE = os.environ.get("GOOGLE_CREDENTIALS_FILE", "credentials.json")
 SIZING_POLICY = {
     "Core":          {"tickers": ["IWDA", "AGGG"],                  "min_pct": 20, "max_pct": 30},
     "Satellite":     {"tickers": ["INFR", "BRIJ", "GILG", "IGLN"], "min_pct": 5,  "max_pct": 12},
-    "Opportunistic": {"tickers": ["EEM", "LUTI", "WSML"],                   "min_pct": 3,  "max_pct": 7},
+    "Opportunistic": {"tickers": ["EEM", "LUTI", "WSML"],                   "min_pct": 2,  "max_pct": 7},
     "Speculative":   {"tickers": ["BTCUSD", "BTC-USD", "COIN"],     "min_pct": 0,  "max_pct": 2},
 }
 
