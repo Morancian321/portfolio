@@ -1084,7 +1084,7 @@ function renderDashboard(root) {
         render: (val, row) => `<strong>${val}<\/strong><br><span style="font-size:.7rem;color:var(--color-text-muted)">${row.ticker}<\/span>`
       },
       { key: 'asset_class', label: 'Class', render: val => `<span class="badge ${badgeAssetClass(val)}">${val || '-'}<\/span>` },
-      { key: 'qty', label: 'Qty', render: val => Number(val).toFixed(2) },
+      { key: 'qty', label: 'Qty', render: val => Number(val).toFixed(0) },
       { key: 'entry_price', label: 'Entry Price', render: val => val != null ? Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}) : '-' },
       { key: 'exit_price', label: 'Exit Price', render: val => val != null ? Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}) : '-' },
       { key: 'realised_pnl_usd', label: 'Realised P&L', render: val => `<span class="${val >= 0 ? 'up' : 'down'}">${fmt(val, 0)}<\/span>` },
