@@ -629,7 +629,7 @@ def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[]
     n        = len(daily_returns)
     mean_r   = sum(daily_returns) / n
     rf_daily = rf_annual / 252
-    variance = sum((r - mean_r)**2 for r in daily_returns) / (n - 1)
+    variance = sum((r - mean_r)**2 for r in daily_returns) / max(n - 1, 1)
     std_r    = math.sqrt(variance)
     Sharpe   = ((mean_r - rf_daily) / std_r * math.sqrt(252)) if std_r > 0 else 0
 
@@ -803,7 +803,7 @@ def portfolio():
             if asset_class == "Crypto":                     flags.append("SPECULATIVE")
             if ticker in ["IWDA", "AGGG"]:                  flags.append("CORE")
             if ticker in ["INFR", "BRIJ", "GILG", "IGLN"]:  flags.append("SATELLITE")
-            if ticker in ["EEM", "WSML"]:                   flags.append("OPPORTUNISTIC")
+            if ticker in ["EEM", "LUTI", "WSML"]:           flags.append("OPPORTUNISTIC")
             p["flags"] = flags
 
             for band, policy in SIZING_POLICY.items():
