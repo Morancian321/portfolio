@@ -59,6 +59,11 @@
 #        3. Hardcoded 2.40% — ECB deposit facility rate as of May 2026. Used only
 #           when both live sources fail (network outage, API schema change, etc.).
 #      rf_rate is still exposed in the /api/portfolio response (as an annualised %).
+#  17. BENCHMARK DEFAULTS: updated fallback tickers to current 50:50 composition:
+#      benchmark        -> IWDA.AS  (iShares MSCI World UCITS ETF Acc)
+#      benchmark_bond   -> AGGH.AS  (iShares Core Global Aggregate Bond EUR Hedged Acc)
+#      Both are accumulating ETFs; their price return equals total return.
+#      Stale references to IEMU.L, IEGA.AS, and CEMU.AS have been removed.
 # SAFE: Sharpe, NAV curve logic, hit_rate, rolling_vol — unchanged.
 # ADDED: test harness under if __name__ == '__main__' for regressions.
 
@@ -222,8 +227,9 @@ def parse_config(config_rows):
         "starting_capital": float(cfg.get("starting_capital", 100000)),
         "base_currency": cfg.get("base_currency", "USD"),
         "inception_date": cfg.get("inception_date", "2026-01-14"),
-        "benchmark": cfg.get("benchmark", "IEMU.L"),
-        "benchmark_bond": cfg.get("benchmark_bond", "IEGA.AS"),
+        # FIX 17: updated benchmark defaults to current 50:50 composition.
+        "benchmark": cfg.get("benchmark", "IWDA.AS"),
+        "benchmark_bond": cfg.get("benchmark_bond", "AGGH.AS"),
         "benchmark_equity_weight": float(cfg.get("benchmark_equity_weight", 0.5)),
         "benchmark_bond_weight": float(cfg.get("benchmark_bond_weight", 0.5)),
         "portfolio_name": cfg.get("portfolio_name", "Investment Portfolio"),
@@ -470,8 +476,9 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
             ticker_map[t["ticker"]] = t.get("yf_ticker")
 
     fx_tickers  = ["GBPUSD=X", "EURUSD=X"]
-    bench_eq_ticker   = cfg.get("benchmark", "CEMU.AS")
-    bench_bond_ticker = cfg.get("benchmark_bond", "IEGA.AS")
+    # FIX 17: use live config values; fallbacks now match current benchmark composition.
+    bench_eq_ticker   = cfg.get("benchmark", "IWDA.AS")
+    bench_bond_ticker = cfg.get("benchmark_bond", "AGGH.AS")
     bench_eq_w   = float(cfg.get("benchmark_equity_weight", 0.5))
     bench_bond_w = float(cfg.get("benchmark_bond_weight", 0.5))
     all_tickers = list(set(ticker_map.values())) + fx_tickers + [bench_eq_ticker, bench_bond_ticker]
