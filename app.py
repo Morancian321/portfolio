@@ -614,10 +614,13 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
             bond_p = float(prices.loc[:dt, bench_bond_ticker].iloc[-1]) if bench_bond_ticker in prices.columns else None
             if eq_p is not None and bond_p is not None:
                 if bench_start is None:
-                    bench_start = {"eq": eq_p, "bond": bond_p}
+                    eurusd_inception = fx_on_date("EUR", dt)        # reads hist_eurusd on inception date
+                    starting_eur = starting / eurusd_inception       # converts USD→EUR once, locked forever
+                    bench_start = {"eq": eq_p, "bond": bond_p, "starting_eur": starting_eur}
+
                 blended = (
-                    starting * (eq_p   / bench_start["eq"])   * bench_eq_w +
-                    starting * (bond_p / bench_start["bond"]) * bench_bond_w
+                    bench_start["starting_eur"] * (eq_p   / bench_start["eq"])   * bench_eq_w +
+                    bench_start["starting_eur"] * (bond_p / bench_start["bond"]) * bench_bond_w
                 )
                 bench_series.append({"date": ds, "value": round(blended, 2)})
         except:
@@ -911,9 +914,9 @@ def portfolio():
                 for field in ["realised_pnl_usd", "cost_usd_sold"]:
                     t[field] = conv(t[field])
 
-            # NAV and benchmark series
+            # NAV series: USD → EUR
             nav_series   = [{"date": x["date"], "value": conv(x["value"])} for x in nav_series]
-            bench_series = [{"date": x["date"], "value": conv(x["value"])} for x in bench_series]
+            # bench_series: already EUR from build_nav_curve — no conversion needed
 
             # Income records
             for r in income_records:
