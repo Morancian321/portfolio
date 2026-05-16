@@ -769,10 +769,6 @@ function renderDashboard(root) {
 
   // ── Open positions filter - build unique asset classes (exclude C&CE) ─────
   const allOpenPos = getOpenPositions();
-  const uniqueClasses = [...new Set(
-    allOpenPos.filter(p => p.asset_class !== 'C&CE').map(p => p.asset_class).filter(Boolean)
-  )].sort();
-  const BANDS = ['Core','Satellite','Opportunistic','Speculative','Unclassified'];
 
   // ── C&CE + Income totals for KPI card ────────────────────────────────────
   const cceTotal     = getCCETotal();
@@ -878,31 +874,6 @@ function renderDashboard(root) {
         <div class="chart-title">Drawdown Band</div>
         <div class="chart-wrap"><canvas id="dashBandCanvas"></canvas></div>
       </div>
-    </div>
-
-    <!-- Open Positions Table -->
-    <div class="table-card section-gap">
-      <div class="table-header">
-        <h2>Open Positions</h2>
-        <div style="display:flex;gap:.5rem;align-items:center">
-          <select id="dashPosAssetFilter" class="dash-pos-filter-select"
-                  onchange="window._dashPosFilters.assetClass=this.value;applyDashPosFilters()">
-            <option value="All Classes">All Classes</option>
-            ${uniqueClasses.map(c => `<option value="${c}"${window._dashPosFilters.assetClass===c?' selected':''}>${c}<\/option>`).join('')}
-          </select>
-          <select id="dashPosBandFilter" class="dash-pos-filter-select"
-                  onchange="window._dashPosFilters.band=this.value;applyDashPosFilters()">
-            <option value="All Bands">All Bands</option>
-            ${BANDS.map(b => `<option value="${b}"${window._dashPosFilters.band===b?' selected':''}>${b}<\/option>`).join('')}
-          </select>
-          <button id="dashPosBreachToggle"
-                  class="btn ${window._dashPosFilters.breachOnly ? 'btn-primary' : 'btn-outline'}"
-                  onclick="window._dashPosFilters.breachOnly=!window._dashPosFilters.breachOnly;this.className='btn '+(window._dashPosFilters.breachOnly?'btn-primary':'btn-outline');applyDashPosFilters()">
-            Breaches Only
-          </button>
-        </div>
-      </div>
-      <div id="dashPosTableWrap"></div>
     </div>
 
     <!-- Closed Trades Table -->
@@ -1117,9 +1088,41 @@ function renderPositions(root) {
   const totalIncome    = getTotalIncome();
   const divIncome      = getDividendsUsd();
   const couponIncome   = getCouponsUsd();
-
+  const allOpenPos    = getOpenPositions();
+  const uniqueClasses = [...new Set(
+    allOpenPos.filter(p => p.asset_class !== 'C&CE').map(p => p.asset_class).filter(Boolean))].sort();
+  const BANDS = ['Core','Satellite','Opportunistic','Speculative','Unclassified'];
+  
   root.innerHTML = `
     ${SectionHeader('Positions', 'Open positions &amp; cash sleeve')}
+
+    <!-- Open Positions Table -->
+    <div class="table-card section-gap">
+      <div class="table-header">
+        <h2>Open Positions</h2>
+        <div style="display:flex;gap:.5rem;align-items:center">
+          <select id="dashPosAssetFilter" class="dash-pos-filter-select"
+             
+    onchange="window._dashPosFilters.assetClass=this.value;applyDashPosFilters()">
+            <option value="All Classes">All Classes</option>
+            ${uniqueClasses.map(c => `<option value="${c}"${window._dashPosFilters.assetClass===c?' selected':''}>${c}<\/option>`).join('')}
+          </select>
+          <select id="dashPosBandFilter" class="dash-pos-filter-select"
+           
+    onchange="window._dashPosFilters.band=this.value;applyDashPosFilters()">
+            <option value="All Bands">All Bands</option>
+            ${BANDS.map(b => `<option value="${b}"${window._dashPosFilters.band===b?' selected':''}>${b}<\/option>`).join('')}
+         </select>
+         <button id="dashPosBreachToggle"
+                 class="btn ${window._dashPosFilters.breachOnly ? 'btn-primary' : 'btn-outline'}"
+            
+    onclick="window._dashPosFilters.breachOnly=!window._dashPosFilters.breachOnly;this.className='btn '+(window._dashPosFilters.breachOnly?'btn-primary':'btn-outline');applyDashPosFilters()">
+            Breaches Only
+          </button>
+        </div>
+      </div>
+      <div id="dashPosTableWrap"></div>
+    </div>
 
     <!-- Cash & Cash Equivalents Box -->
     <div class="table-card section-gap">
@@ -1231,6 +1234,7 @@ function renderPositions(root) {
           emptyMessage: 'No income records to display.'
         });
   }
+  applyDashPosFilters();
 }
 
 function renderPositionDetail(root, ticker) { root.innerHTML = `<p style="padding:2rem;color:var(--color-text-muted)">Position: ${ticker}<\/p>`; }
