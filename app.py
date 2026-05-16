@@ -1020,8 +1020,6 @@ def asset_class_performance():
 
         if prices.index.tz is not None:
             prices.index = prices.index.tz_convert("UTC").tz_localize(None)
-        prices = apply_nav_overrides_to_prices(prices, nav_overrides)       
-        prices = strip_outliers(prices)
 
         hist_gbpusd = prices["GBPUSD=X"] if "GBPUSD=X" in prices.columns else None
         hist_eurusd = prices["EURUSD=X"] if "EURUSD=X" in prices.columns else None
@@ -1461,3 +1459,4 @@ def _run_tests():
 if __name__ == "__main__":
     _run_tests()
     app.run(debug=True, port=5000)
+    
