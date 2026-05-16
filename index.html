@@ -1262,7 +1262,8 @@ function renderPositions(root) {
   // ── Asset Class Performance Chart ─────────────────────────────────────────
   (function buildAcPerfChart() {
     const acData  = getAcPerfData();
-    const classes = Object.keys(acData).filter(ac => acData[ac]?.length > 0);
+    const AC_ORDER = ['Equity','Fixed Income','Infrastructure','Commodity','Energy/Utilities','C&CE'];
+    const classes = [...AC_ORDER.filter(ac => acData[ac]?.length > 0),...Object.keys(acData).filter(ac => !AC_ORDER.includes(ac) && acData[ac]?.length > 0)];
     if (!classes.length) {
       const card = document.getElementById('acPerfCard');
       if (card) card.innerHTML = EmptyState('📊', 'No performance data', 'Asset class series will appear once the new endpoint is deployed.');
