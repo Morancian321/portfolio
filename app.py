@@ -1060,8 +1060,6 @@ def asset_class_performance():
             for e in events_by_date.get(ds, []):
                 tk       = e["ticker"]
                 ac       = e.get("asset_class") or ticker_ac_map.get(tk, "Unknown")
-                if ac == "C&CE":
-                    continue  # skip cash sleeve
                 ticker_ac_map[tk] = ac
                 qty      = float(e.get("quantity", 0))
                 price    = float(e.get("price", 0))
@@ -1130,8 +1128,9 @@ def asset_class_performance():
             return obj
 
         active_classes = set(ac for ac, holdings in ac_holdings.items() if holdings)
-
-        filtered_series = {ac: series for ac, series in ac_series.items() if ac in active_classes}
+        filtered_series = {ac: series for ac, series in ac_series.items()
+            if ac in active_classes or ac == "C&CE"
+        }
 
         return jsonify({"asset_class_series": sanitise(filtered_series)})
 
