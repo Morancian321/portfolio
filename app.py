@@ -1129,7 +1129,11 @@ def asset_class_performance():
                 return [sanitise(v) for v in obj]
             return obj
 
-        return jsonify({"asset_class_series": sanitise(dict(ac_series))})
+        active_classes = set(ac for ac, holdings in ac_holdings.items() if holdings)
+
+        filtered_series = {ac: series for ac, series in ac_series.items() if ac in active_classes}
+
+        return jsonify({"asset_class_series": sanitise(filtered_series)})
 
     except Exception as e:
         import traceback
