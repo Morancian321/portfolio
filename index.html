@@ -1262,7 +1262,7 @@ function renderPositions(root) {
   // ── Asset Class Performance Chart ─────────────────────────────────────────
   (function buildAcPerfChart() {
     const acData  = getAcPerfData();
-    const classes = Object.keys(acData).filter(ac => ac !== 'C&CE' && acData[ac]?.length > 0);
+    const classes = Object.keys(acData).filter(ac => acData[ac]?.length > 0);
     if (!classes.length) {
       const card = document.getElementById('acPerfCard');
       if (card) card.innerHTML = EmptyState('📊', 'No performance data', 'Asset class series will appear once the new endpoint is deployed.');
@@ -1274,7 +1274,7 @@ function renderPositions(root) {
       'Infrastructure': '#ffa657',
       'Commodity':      '#bc8cff',
       'Energy/Utilities':         '#3fb950',
-      'C&CE':    '#f85149',
+      'C&CE':    '#4f98a3',
     };
     const fallbacks = ['#58a6ff','#d29922','#ffa657','#bc8cff','#3fb950','#f85149','#4f98a3'];
     const colorFor  = (ac, i) => AC_COLORS[ac] || fallbacks[i % fallbacks.length];
