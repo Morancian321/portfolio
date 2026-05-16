@@ -1073,17 +1073,17 @@ def asset_class_performance():
                 holdings = ac_holdings[ac]
                 if action == "OPEN":
                     holdings[tk] = {"qty": qty, "yf_ticker": ytk,
-                                    "currency": currency, "avg_cost_usd": p_usd}
+                                    "currency": currency, "avg_cost_base": price_base}
                 elif action == "ADD":
                     if tk in holdings:
                         old = holdings[tk]
                         total_qty = old["qty"] + qty
-                        avg_cost  = (old["avg_cost_usd"] * old["qty"] + p_usd * qty) / total_qty
+                        avg_cost  = (old["avg_cost_base"] * old["qty"] + price_base * qty) / total_qty
                         holdings[tk]["qty"] = total_qty
-                        holdings[tk]["avg_cost_usd"] = avg_cost
+                        holdings[tk]["avg_cost_base"] = avg_cost
                     else:
                         holdings[tk] = {"qty": qty, "yf_ticker": ytk,
-                                        "currency": currency, "avg_cost_usd": p_usd}
+                                        "currency": currency, "avg_cost_base": price_base}
                 elif action == "REDUCE":
                     if tk in holdings:
                         holdings[tk]["qty"] -= qty
@@ -1096,7 +1096,10 @@ def asset_class_performance():
             for ac, holdings in ac_holdings.items():
                 if not holdings:
                     continue
-                invested = sum(h["avg_cost_usd"] * h["qty"] for h in holdings.values())
+                invested = sum(
+                    h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
+                    for h in holdings.values()
+                )
                 if invested <= 0:
                     continue
                 mv = 0.0
@@ -1107,12 +1110,12 @@ def asset_class_performance():
                     try:
                         if ytk in prices.columns:
                             p_raw = float(prices.loc[:dt, ytk].iloc[-1])
-                            p_base = normalize_gbx_price(p_raw, h["avg_cost_usd"] / fx_r) if is_lse_pence(currency) else p_raw
+                            p_base = normalize_gbx_price(p_raw, h["avg_cost_base"]) if is_lse_pence(currency) else p_raw
                             mv += p_base * fx_r * h["qty"]
                         else:
-                            mv += h["avg_cost_usd"] * h["qty"]  # fallback: flat
+                            mv += h["avg_cost_base"] * fx_r * h["qty"]  # fallback: flat
                     except:
-                        mv += h["avg_cost_usd"] * h["qty"]
+                        mv += h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
 
                 growth_pct = round((mv - invested) / invested * 100, 4)
                 ac_series[ac].append({"date": ds, "growth_pct": growth_pct})
