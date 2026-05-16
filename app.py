@@ -1053,6 +1053,7 @@ def asset_class_performance():
         date_range  = pd.bdate_range(start=inception, end=today)
         # Result: { asset_class: [ {date, growth_pct} ] }
         ac_series = defaultdict(list)
+        cash = cfg["starting_capital"]
 
         for dt in date_range:
             ds = dt.strftime("%Y-%m-%d")
@@ -1092,9 +1093,19 @@ def asset_class_performance():
                 elif action == "CLOSE":
                     holdings.pop(tk, None)
 
+                if action in ("OPEN", "ADD"):
+                    cash -= p_usd * qty
+                elif action == "REDUCE":
+                    cash += p_usd * qty
+                elif action == "CLOSE":
+                    close_qty = ac_holdings[ac].get(tk, {}).get("qty", qty)
+                    cash += p_usd * close_qty
+
             # After processing today's trades, compute growth % for each asset class
+
+            # --- All asset classes except C&CE ---
             for ac, holdings in ac_holdings.items():
-                if not holdings:
+                if ac == "C&CE" or not holdings:
                     continue
                 invested = sum(
                     h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
@@ -1109,16 +1120,46 @@ def asset_class_performance():
                     fx_r     = fx_on_date(currency, dt)
                     try:
                         if ytk in prices.columns:
-                            p_raw = float(prices.loc[:dt, ytk].iloc[-1])
+                            p_raw  = float(prices.loc[:dt, ytk].iloc[-1])
                             p_base = normalize_gbx_price(p_raw, h["avg_cost_base"]) if is_lse_pence(currency) else p_raw
-                            mv += p_base * fx_r * h["qty"]
+                            mv    += p_base * fx_r * h["qty"]
                         else:
                             mv += h["avg_cost_base"] * fx_r * h["qty"]  # fallback: flat
-                    except:
-                        mv += h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
+                     except:
+                         mv += h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
 
                 growth_pct = round((mv - invested) / invested * 100, 4)
                 ac_series[ac].append({"date": ds, "growth_pct": growth_pct})
+
+            # --- C&CE: blend ERNE (or any C&CE instrument) MV + residual cash ---
+            # Cash cost basis = face value, so it always contributes 0% growth.
+            # This means C&CE starts from inception (flat at 0%) and only dips
+            # fractionally after ERNE is opened on May 12.
+            cce_holdings = ac_holdings.get("C&CE", {})
+            cce_mv       = 0.0
+            cce_invested = 0.0
+            for tk, h in cce_holdings.items():
+                ytk      = h["yf_ticker"]
+                currency = h.get("currency", "USD")
+                fx_r     = fx_on_date(currency, dt)
+                try:
+                    if ytk in prices.columns:
+                        p_raw    = float(prices.loc[:dt, ytk].iloc[-1])
+                        p_base   = normalize_gbx_price(p_raw, h["avg_cost_base"]) if is_lse_pence(currency) else p_raw
+                    cce_mv      += p_base * fx_r * h["qty"]
+                    cce_invested += h["avg_cost_base"] * fx_r * h["qty"]
+                    else:
+                        cce_mv      += h["avg_cost_base"] * fx_r * h["qty"]
+                        cce_invested += h["avg_cost_base"] * fx_r * h["qty"]
+                except:
+                    cce_mv      += h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
+                    cce_invested += h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
+
+            total_cce_cost = cce_invested + cash   # cash face value = cost basis
+            total_cce_mv   = cce_mv + cash
+            if total_cce_cost > 0:
+                growth_pct = round((total_cce_mv - total_cce_cost) / total_cce_cost * 100, 4)
+                ac_series["C&CE"].append({"date": ds, "growth_pct": growth_pct})
 
         def sanitise(obj):
             """Recursively replace float NaN/Inf with None for JSON safety."""
