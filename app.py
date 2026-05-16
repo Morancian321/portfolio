@@ -1120,6 +1120,25 @@ def asset_class_performance():
                 growth_pct = round((mv - invested) / invested * 100, 4)
                 ac_series[ac].append({"date": ds, "growth_pct": growth_pct})
 
+        # Backfill each asset class series with 0.0 growth from inception
+        # up to the day before its first real entry.
+        inception_str = inception.strftime("%Y-%m-%d")
+        all_bdays = [d.strftime("%Y-%m-%d") for d in date_range]
+
+        for ac in list(ac_series.keys()):
+            series = ac_series[ac]
+            if not series:
+                continue
+            first_real_date = series[0]["date"]
+            # Build padding: every business day from inception up to (not including) first_real_date
+            padding = [
+                {"date": d, "growth_pct": 0.0}
+                for d in all_bdays
+                if d < first_real_date
+            ]
+            if padding:
+                ac_series[ac] = padding + series
+        
         def sanitise(obj):
             """Recursively replace float NaN/Inf with None for JSON safety."""
             if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
