@@ -99,7 +99,7 @@ table tr:hover td{background:color-mix(in oklch,var(--color-primary) 5%,transpar
 .badge-fixed-income{background:color-mix(in oklch,var(--color-purple) 15%,transparent);color:var(--color-purple)}
 .badge-infrastructure{background:color-mix(in oklch,var(--color-orange) 15%,transparent);color:var(--color-orange)}
 .badge-commodity{background:color-mix(in oklch,var(--color-gold) 15%,transparent);color:var(--color-gold)}
-.badge-crypto{background:color-mix(in oklch,var(--color-success) 15%,transparent);color:var(--color-success)}
+.badge-C&CE{background:color-mix(in oklch,var(--color-success) 15%,transparent);color:var(--color-success)}
 
 /* Footer */
 footer{border-top:1px solid var(--color-border);padding-block:1.5rem;margin-top:2rem}
@@ -229,7 +229,7 @@ footer{border-top:1px solid var(--color-border);padding-block:1.5rem;margin-top:
 const fmt = (n, dec=2) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', {minimumFractionDigits:dec, maximumFractionDigits:dec});
 const fmtPct = (n) => n == null ? '—' : (n >= 0 ? '+' : '') + Number(n).toFixed(2) + '%';
 const badgeClass = ac => {
-  const m = {'Equity':'badge-equity','Fixed Income':'badge-fixed-income','Infrastructure':'badge-infrastructure','Commodity':'badge-commodity','Crypto':'badge-crypto'};
+  const m = {'Equity':'badge-equity','Fixed Income':'badge-fixed-income','Infrastructure':'badge-infrastructure','Commodity':'badge-commodity','C&CE':'badge-C&CE'};
   return m[ac] || 'badge-equity';
 };
 
