@@ -811,7 +811,6 @@ def portfolio():
             if ticker == "GILG" and weight_pct < 5:         flags.append("UNDERWEIGHT")
             if ticker == "IGLN":                            flags.append("CONVICTION_HOLD")
             if ticker == "WSML":                            flags.append("TRIM_CANDIDATE")
-            if asset_class == "Crypto":                     flags.append("SPECULATIVE")
             if ticker in ["IWDA", "AGGG"]:                  flags.append("CORE")
             if ticker in ["INFR", "BRIJ", "GILG", "IGLN"]:  flags.append("SATELLITE")
             if ticker in ["EEM", "LUTI", "WSML"]:           flags.append("OPPORTUNISTIC")
