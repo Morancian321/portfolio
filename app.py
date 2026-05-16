@@ -1119,7 +1119,17 @@ def asset_class_performance():
                 growth_pct = round((mv - invested) / invested * 100, 4)
                 ac_series[ac].append({"date": ds, "growth_pct": growth_pct})
 
-        return jsonify({"asset_class_series": dict(ac_series)})
+        def sanitise(obj):
+            """Recursively replace float NaN/Inf with None for JSON safety."""
+            if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+                return None
+            if isinstance(obj, dict):
+                return {k: sanitise(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [sanitise(v) for v in obj]
+            return obj
+
+        return jsonify({"asset_class_series": sanitise(dict(ac_series))})
 
     except Exception as e:
         import traceback
