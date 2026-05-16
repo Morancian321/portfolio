@@ -383,7 +383,17 @@ async function fetchTradeRationale() {
     window._rationaleData = await res.json();
   } catch { window._rationaleData = []; }
 }
+window._acPerfData = null;
 
+async function fetchAcPerformance() {
+  try {
+    const res = await fetch(API + '/api/asset_class_performance');
+    const d = await res.json();
+    window._acPerfData = d?.asset_class_series || {};
+  } catch { window._acPerfData = {}; }
+}
+
+const getAcPerfData = () => window._acPerfData || {};
 const getMetrics         = () => window._portfolioData?.metrics || {};
 const getSummary         = () => window._portfolioData || {};
 const getNavSeries       = () => window._portfolioData?.nav_series || [];
@@ -623,6 +633,7 @@ window._overviewRange = window._overviewRange || 'Since Inception';
 
 // Dashboard chart module-level variables
 let dashNavChart = null;
+let acPerfChart  = null;
 let dashAllocChart = null;
 let dashBandChart = null;
 
@@ -1096,6 +1107,18 @@ function renderPositions(root) {
   root.innerHTML = `
     ${SectionHeader('Positions', 'Open positions &amp; cash sleeve')}
 
+    <!-- Asset Class Performance Chart -->
+    <div class="chart-card section-gap" id="acPerfCard">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:1.25rem;flex-wrap:wrap;gap:.75rem">
+        <div>
+          <div class="chart-title" style="margin-bottom:.25rem">Asset Class Historical Performance</div>
+          <div style="font-size:.75rem;color:var(--color-text-muted)">Growth % from cost basis · adjusts for entries, exits &amp; rebalances</div>
+        </div>
+        <div id="acPerfBtns" style="display:flex;gap:.4rem;flex-wrap:wrap"></div>
+      </div>
+      <div class="chart-wrap" style="height:280px"><canvas id="acPerfCanvas"></canvas></div>
+    </div>
+
     <!-- Open Positions Table -->
     <div class="table-card section-gap">
       <div class="table-header">
@@ -1235,6 +1258,112 @@ function renderPositions(root) {
         });
   }
   applyDashPosFilters();
+
+  // ── Asset Class Performance Chart ─────────────────────────────────────────
+  (function buildAcPerfChart() {
+    const acData  = getAcPerfData();
+    const classes = Object.keys(acData).filter(ac => ac !== 'C&CE' && acData[ac]?.length > 0);
+    if (!classes.length) {
+      const card = document.getElementById('acPerfCard');
+      if (card) card.innerHTML = EmptyState('📊', 'No performance data', 'Asset class series will appear once the new endpoint is deployed.');
+      return;
+    }
+    const AC_COLORS = {
+      'Equity':         '#58a6ff',
+      'Fixed Income':   '#d29922',
+      'Infrastructure': '#ffa657',
+      'Commodity':      '#bc8cff',
+      'Energy/Utilities':         '#3fb950',
+      'C&CE':    '#f85149',
+    };
+    const fallbacks = ['#58a6ff','#d29922','#ffa657','#bc8cff','#3fb950','#f85149','#4f98a3'];
+    const colorFor  = (ac, i) => AC_COLORS[ac] || fallbacks[i % fallbacks.length];
+    if (!window._acPerfActive || !classes.includes(window._acPerfActive)) {
+      window._acPerfActive = classes[0];
+    }
+    const btnWrap = document.getElementById('acPerfBtns');
+    if (btnWrap) {
+      btnWrap.innerHTML = classes.map((ac, i) => {
+        const col = colorFor(ac, i);
+        const isActive = ac === window._acPerfActive;
+        return `<button
+          class="btn ${isActive ? 'btn-primary' : 'btn-outline'} ac-perf-btn"
+          data-ac="${ac}"
+          style="${isActive ? `background:${col};border-color:${col};color:#fff` : ''}"
+          onclick="window._switchAcPerf('${ac}')">${ac}</button>`;
+      }).join('');
+    }
+    function buildDatasets(selected) {
+      return classes.map((ac, i) => ({
+        label: ac,
+        data: acData[ac].map(p => ({ x: p.date, y: p.growth_pct })),
+        borderColor: colorFor(ac, i),
+        backgroundColor: colorFor(ac, i) + '18',
+        borderWidth: ac === selected ? 2 : 0,
+        pointRadius: 0,
+        fill: ac === selected,
+        tension: .35,
+        hidden: ac !== selected,
+      }));
+    }
+    const c = chartDefaults();
+    const ctx = document.getElementById('acPerfCanvas')?.getContext('2d');
+    if (!ctx) return;
+    destroyChartSafe(acPerfChart);
+    acPerfChart = new Chart(ctx, {
+      type: 'line',
+      data: { datasets: buildDatasets(window._acPerfActive) },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: c.tooltip_bg,
+            borderColor: c.tooltip_border,
+            borderWidth: 1,
+            titleColor: c.text,
+            bodyColor: c.text,
+            callbacks: {
+              label: ctx => {
+                const v = ctx.parsed.y;
+                return ' ' + ctx.dataset.label + ': ' + (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            type: 'time',
+            time: { unit: 'month' },
+            grid: { color: c.grid },
+            ticks: { color: c.text, font: { size: 11 } }
+          },
+          y: {
+            grid: { color: c.grid },
+            ticks: {
+              color: c.text,
+              font: { size: 11 },
+              callback: v => (v >= 0 ? '+' : '') + v.toFixed(1) + '%'
+            }
+          }
+        }
+      }
+    });
+    window._switchAcPerf = function(selected) {
+      window._acPerfActive = selected;
+      document.querySelectorAll('.ac-perf-btn').forEach((btn, i) => {
+        const ac  = btn.dataset.ac;
+        const col = colorFor(ac, i);
+        const on  = ac === selected;
+        btn.className = 'btn ' + (on ? 'btn-primary' : 'btn-outline') + ' ac-perf-btn';
+        btn.style.cssText = on ? `background:${col};border-color:${col};color:#fff` : '';
+      });
+      acPerfChart.data.datasets = buildDatasets(selected);
+      acPerfChart.update('active');
+    };
+  })();
 }
 
 function renderPositionDetail(root, ticker) { root.innerHTML = `<p style="padding:2rem;color:var(--color-text-muted)">Position: ${ticker}<\/p>`; }
@@ -1251,7 +1380,7 @@ document.getElementById('hamburgerBtn').addEventListener('click', () => {
 
 async function init() {
   try {
-    await Promise.all([fetchPortfolio(), fetchTradeRationale()]);
+    await Promise.all([fetchPortfolio(), fetchTradeRationale(), fetchAcPerformance()]);
     document.getElementById('loadingScreen').classList.add('hidden');
     document.getElementById('lastUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString();
     const { handler, param } = getRoute();
