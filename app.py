@@ -987,6 +987,144 @@ def price_history():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/asset_class_performance")
+def asset_class_performance():
+    try:
+        trades, config_rows, manual_rows, nav_overrides_rows, income_rows = get_sheet_data()
+        cfg       = parse_config(config_rows)
+        fx_rates  = get_fx_rates()
+        manual_map = {r["ticker"]: r["manual_price"] for r in manual_rows if r.get("ticker")}
+
+        inception = datetime.strptime(cfg["inception_date"], "%Y-%m-%d")
+        today     = datetime.today()
+        disp      = cfg.get("display_currency", "USD")
+        usd_to_disp = (1.0 / fx_rates[disp]) if (disp != "USD" and disp in fx_rates) else 1.0
+
+        # Build ticker → yf_ticker map and collect all tickers needed
+        ticker_map = {}
+        for t in trades:
+            if t.get("yf_ticker") and t.get("ticker"):
+                ticker_map[t["ticker"]] = t["yf_ticker"]
+
+        fx_tickers = ["GBPUSD=X", "EURUSD=X"]
+        all_tickers = list(set(ticker_map.values())) + fx_tickers
+        raw = yf.download(all_tickers,
+                          start=inception.strftime("%Y-%m-%d"),
+                          end=(today + timedelta(days=1)).strftime("%Y-%m-%d"),
+                          auto_adjust=True, progress=False)
+
+        if isinstance(raw.columns, pd.MultiIndex):
+            prices = raw["Close"]
+        else:
+            prices = raw[["Close"]] if "Close" in raw.columns else raw
+
+        if prices.index.tz is not None:
+            prices.index = prices.index.tz_convert("UTC").tz_localize(None)
+
+        hist_gbpusd = prices["GBPUSD=X"] if "GBPUSD=X" in prices.columns else None
+        hist_eurusd = prices["EURUSD=X"] if "EURUSD=X" in prices.columns else None
+
+        def fx_on_date(currency, dt):
+            fk = fx_key(currency)
+            if fk == "USD":   return 1.0
+            if fk == "GBP":   series, fallback = hist_gbpusd, fx_rates.get("GBP", 1.0)
+            elif fk == "EUR": series, fallback = hist_eurusd, fx_rates.get("EUR", 1.0)
+            else: return 1.0
+            if series is None: return fallback
+            try:
+                val = float(series.loc[:dt].iloc[-1])
+                return val if pd.notna(val) else fallback
+            except: return fallback
+
+        from collections import defaultdict
+        events_by_date = defaultdict(list)
+        for t in trades:
+            events_by_date[t["date"]].append(t)
+
+        # Per-asset-class holdings: { asset_class: { ticker: {qty, yf_ticker, currency, avg_cost_usd} } }
+        ac_holdings = defaultdict(dict)
+        # Track ticker → asset_class mapping (from first trade)
+        ticker_ac_map = {}
+        for t in trades:
+            tk = t["ticker"]
+            if tk not in ticker_ac_map and t.get("asset_class"):
+                ticker_ac_map[tk] = t["asset_class"]
+
+        date_range  = pd.bdate_range(start=inception, end=today)
+        # Result: { asset_class: [ {date, growth_pct} ] }
+        ac_series = defaultdict(list)
+
+        for dt in date_range:
+            ds = dt.strftime("%Y-%m-%d")
+
+            for e in events_by_date.get(ds, []):
+                tk       = e["ticker"]
+                ac       = e.get("asset_class") or ticker_ac_map.get(tk, "Unknown")
+                if ac == "C&CE":
+                    continue  # skip cash sleeve
+                ticker_ac_map[tk] = ac
+                qty      = float(e.get("quantity", 0))
+                price    = float(e.get("price", 0))
+                action   = e.get("action", "").upper()
+                ytk      = e.get("yf_ticker", tk)
+                currency = get_currency(e, ytk)
+                fx_r     = fx_on_date(currency, dt)
+                price_base = price / 100 if is_lse_pence(currency) else price
+                p_usd    = price_base * fx_r
+
+                holdings = ac_holdings[ac]
+                if action == "OPEN":
+                    holdings[tk] = {"qty": qty, "yf_ticker": ytk,
+                                    "currency": currency, "avg_cost_usd": p_usd}
+                elif action == "ADD":
+                    if tk in holdings:
+                        old = holdings[tk]
+                        total_qty = old["qty"] + qty
+                        avg_cost  = (old["avg_cost_usd"] * old["qty"] + p_usd * qty) / total_qty
+                        holdings[tk]["qty"] = total_qty
+                        holdings[tk]["avg_cost_usd"] = avg_cost
+                    else:
+                        holdings[tk] = {"qty": qty, "yf_ticker": ytk,
+                                        "currency": currency, "avg_cost_usd": p_usd}
+                elif action == "REDUCE":
+                    if tk in holdings:
+                        holdings[tk]["qty"] -= qty
+                        if holdings[tk]["qty"] <= 0:
+                            del holdings[tk]
+                elif action == "CLOSE":
+                    holdings.pop(tk, None)
+
+            # After processing today's trades, compute growth % for each asset class
+            for ac, holdings in ac_holdings.items():
+                if not holdings:
+                    continue
+                invested = sum(h["avg_cost_usd"] * h["qty"] for h in holdings.values())
+                if invested <= 0:
+                    continue
+                mv = 0.0
+                for tk, h in holdings.items():
+                    ytk      = h["yf_ticker"]
+                    currency = h.get("currency", "USD")
+                    fx_r     = fx_on_date(currency, dt)
+                    try:
+                        if ytk in prices.columns:
+                            p_raw = float(prices.loc[:dt, ytk].iloc[-1])
+                            p_base = normalize_gbx_price(p_raw, h["avg_cost_usd"] / fx_r) if is_lse_pence(currency) else p_raw
+                            mv += p_base * fx_r * h["qty"]
+                        else:
+                            mv += h["avg_cost_usd"] * h["qty"]  # fallback: flat
+                    except:
+                        mv += h["avg_cost_usd"] * h["qty"]
+
+                growth_pct = round((mv - invested) / invested * 100, 4)
+                ac_series[ac].append({"date": ds, "growth_pct": growth_pct})
+
+        return jsonify({"asset_class_series": dict(ac_series)})
+
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
 @app.route("/api/trade_rationale")
 def trade_rationale():
     try:
