@@ -1296,7 +1296,9 @@ function renderPositions(root) {
     function buildDatasets(selected) {
       return classes.map((ac, i) => ({
         label: ac,
-        data: acData[ac].map(p => ({ x: p.date, y: p.growth_pct })),
+        data: acData[ac]
+          .filter(p => p.growth_pct != null && isFinite(p.growth_pct))
+          .map(p => ({ x: p.date, y: p.growth_pct })),
         borderColor: colorFor(ac, i),
         backgroundColor: colorFor(ac, i) + '18',
         borderWidth: ac === selected ? 2 : 0,
