@@ -1344,6 +1344,12 @@ function renderPositions(root) {
       options: {
         responsive: true,
         maintainAspectRatio: false,
+        elements: {          // <-- ADD THIS
+          point: {
+            radius: 0,
+            hoverRadius: 5,
+          }
+        },
         interaction: { mode: 'index', intersect: false },
         plugins: {
           legend: { display: false },
