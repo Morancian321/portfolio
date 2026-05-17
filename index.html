@@ -1262,7 +1262,15 @@ function renderPositions(root) {
   // ── Asset Class Performance Chart ─────────────────────────────────────────
   (function buildAcPerfChart() {
     const acData  = getAcPerfData();
-    const classes = Object.keys(acData).filter(ac => acData[ac]?.length > 0);
+    const heldClasses = new Set(
+      getOpenPositions()
+        .filter(p => p.asset_class !== 'C&CE')
+        .map(p => p.asset_class)
+        .filter(Boolean)
+    );
+    const classes = Object.keys(acData).filter(ac =>
+      acData[ac]?.length > 0 && heldClasses.has(ac)
+    );
     if (!classes.length) {
       const card = document.getElementById('acPerfCard');
       if (card) card.innerHTML = EmptyState('📊', 'No performance data', 'Asset class series will appear once the new endpoint is deployed.');
