@@ -1293,6 +1293,24 @@ function renderPositions(root) {
           onclick="window._switchAcPerf('${ac}')">${ac}</button>`;
       }).join('');
     }
+    // Compute global Y bounds across ALL asset classes
+    function getGlobalYBounds() {
+      let globalMin = Infinity;
+      let globalMax = -Infinity;
+      classes.forEach(ac => {
+        acData[ac]
+          .filter(p => p.growth_pct != null && isFinite(p.growth_pct))
+          .forEach(p => {
+            if (p.growth_pct < globalMin) globalMin = p.growth_pct;
+            if (p.growth_pct > globalMax) globalMax = p.growth_pct;
+          });
+      });
+      const padding = (globalMax - globalMin) * 0.05 || 1;
+      return { min: globalMin - padding, max: globalMax + padding };
+    }
+
+    const { min: yMin, max: yMax } = getGlobalYBounds();
+    
     function buildDatasets(selected) {
       return classes.map((ac, i) => ({
         label: ac,
@@ -1343,6 +1361,8 @@ function renderPositions(root) {
             ticks: { color: c.text, font: { size: 11 } }
           },
           y: {
+            min: yMin,
+            max: yMax,
             grid: { color: c.grid },
             ticks: {
               color: c.text,
