@@ -586,21 +586,33 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
         # FIX 13: Inject income received on this date into the cash balance.
         cash += income_by_date.get(ds, 0.0)
 
+        # INCEPTION FIX: On inception day, value = cost basis (qty × punch_price × fx).
+        # yfinance close prices on this date cause a false P&L — assets were bought
+        # during the day, not at market open. Summing avg_cost_base × fx × qty
+        # identically reproduces starting_capital (cash deductions cancel out).
+        is_inception_day = (ds == cfg["inception_date"])
+
         # FIX 10: On the final date, use live prices from build_positions().
         is_final_date = (dt == last_date)
-        if is_final_date and live_positions_mv is not None and live_cash is not None:
+
+        if is_inception_day:
+            port_val = cash
+            for tk, h in holdings.items():
+                currency = h.get("currency", get_currency({}, h["yf_ticker"]))
+                fx_r     = fx_on_date(currency, dt)
+                port_val += h["avg_cost_base"] * fx_r * h["qty"]
+        elif is_final_date and live_positions_mv is not None and live_cash is not None:
             port_val = live_cash + live_positions_mv
         else:
             port_val = cash
             for tk, h in holdings.items():
-                ytk      = h["yf_ticker"]
-                currency = h.get("currency", get_currency({}, ytk))
-                fx_r     = fx_on_date(currency, dt)
+                ytk           = h["yf_ticker"]
+                currency      = h.get("currency", get_currency({}, ytk))
+                fx_r          = fx_on_date(currency, dt)
                 avg_cost_base = h.get("avg_cost_base", 0)
                 try:
                     if ytk in prices.columns:
-                        p_raw = float(prices.loc[:dt, ytk].iloc[-1])
-                        # FIX 15: normalize only for GBX pence feeds.
+                        p_raw  = float(prices.loc[:dt, ytk].iloc[-1])
                         p_base = normalize_gbx_price(p_raw, avg_cost_base) if is_lse_pence(currency) else p_raw
                         port_val += p_base * fx_r * h["qty"]
                     else:
