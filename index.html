@@ -1264,7 +1264,6 @@ function renderPositions(root) {
     const acData  = getAcPerfData();
     const heldClasses = new Set(
       getOpenPositions()
-        .filter(p => p.asset_class !== 'C&CE')
         .map(p => p.asset_class)
         .filter(Boolean)
     );
