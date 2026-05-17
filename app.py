@@ -1105,6 +1105,8 @@ def asset_class_performance():
                     holdings.pop(tk, None)
 
             # After processing today's trades, compute growth % for each asset class
+            is_inception_day = (ds == inception.strftime("%Y-%m-%d"))
+
             for ac, holdings in ac_holdings.items():
                 if not holdings:
                     continue
@@ -1114,6 +1116,13 @@ def asset_class_performance():
                 )
                 if invested <= 0:
                     continue
+
+                # INCEPTION FIX: on inception day growth is always 0% — assets
+                # were just purchased at punch price, no market move has occurred.
+                if is_inception_day:
+                    ac_series[ac].append({"date": ds, "growth_pct": 0.0})
+                    continue
+
                 mv = 0.0
                 for tk, h in holdings.items():
                     ytk      = h["yf_ticker"]
