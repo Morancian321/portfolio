@@ -81,6 +81,11 @@ main{padding-block:2rem}
 .kpi-delta{font-size:.8rem;font-weight:500;margin-top:.4rem;font-variant-numeric:tabular-nums}
 .up{color:var(--color-success)}.down{color:var(--color-error)}.neutral{color:var(--color-text-muted)}
 
+/* ── KPI Row 2: 4-column benchmark ratio row (always full-width) ─────────────── */
+.kpi-grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-bottom:2rem}
+@media(max-width:768px){.kpi-grid-4{grid-template-columns:1fr 1fr}}
+@media(max-width:480px){.kpi-grid-4{grid-template-columns:1fr}}
+
 /* ── Charts Grid ─────────────────────────────────────────────────────────────── */
 .charts-grid{display:grid;grid-template-columns:1fr;gap:1.5rem;margin-bottom:2rem}
 @media(min-width:900px){.charts-grid{grid-template-columns:2fr 1fr}}
@@ -796,7 +801,7 @@ function renderDashboard(root) {
   root.innerHTML = `
     ${SectionHeader('Dashboard', 'Full portfolio analytics')}
 
-    <!-- KPI Row 1: Primary -->
+    <!-- KPI Row 1: Primary metrics (5 cards) -->
     <div class="kpi-grid section-gap" style="margin-bottom:1rem">
       ${MetricCard(
         'Net Asset Value (NAV)',
@@ -828,8 +833,8 @@ function renderDashboard(root) {
       )}
     </div>
 
-    <!-- KPI Row 2: Portfolio vs Benchmark -->
-    <div class="kpi-grid section-gap" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr));margin-bottom:2rem">
+    <!-- KPI Row 2: Portfolio vs Benchmark ratios (4 equal columns, full width) -->
+    <div class="kpi-grid-4 section-gap">
       ${BenchmarkKpiCard(
         'Sharpe Ratio',
         getMetrics().Sharpe_ratio,
@@ -856,7 +861,7 @@ function renderDashboard(root) {
       )}
     </div>
 
-    <!-- NAV Chart -->
+    <!-- NAV Chart (full width, stacked below KPI rows) -->
     <div class="chart-card section-gap">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
         <div class="chart-title" style="margin-bottom:0">NAV vs 50:50 Equity:Debt Benchmark - ${currentRange}</div>
@@ -875,7 +880,7 @@ function renderDashboard(root) {
       <div class="chart-wrap" style="height:300px"><canvas id="dashNavCanvas"></canvas></div>
     </div>
 
-    <!-- Allocation Section -->
+    <!-- Allocation + Drawdown Band (side by side, 50/50) -->
     <div class="dash-alloc-grid">
       <div class="chart-card">
         <div class="chart-title">Asset Allocation</div>
@@ -1083,353 +1088,284 @@ function renderDashboard(root) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// SECTION 9 - PAGE RENDERERS
+// SECTION 9 - POSITIONS
 // ════════════════════════════════════════════════════════════════════════════
-
 function renderPositions(root) {
-  const summary      = getSummary();
+  const positions = getOpenPositions().filter(p => p.asset_class !== 'C&CE');
   const ccePositions = getCCEPositions();
-  const cceTotal     = getCCETotal();
-  const cceMV        = ccePositions.reduce((s, p) => s + (p.mv_usd || 0), 0);
-  const uninvested   = summary.cash || 0;
-  const navTotal     = summary.current_value || 1;
+  const cceTotal = getCCETotal();
 
-  // Income data
-  const incomeRecords  = [...getIncomeRecords()].sort((a, b) => new Date(b.date) - new Date(a.date));
-  const totalIncome    = getTotalIncome();
-  const divIncome      = getDividendsUsd();
-  const couponIncome   = getCouponsUsd();
-  const allOpenPos    = getOpenPositions();
-  const uniqueClasses = [...new Set(
-    allOpenPos.filter(p => p.asset_class !== 'C&CE').map(p => p.asset_class).filter(Boolean))].sort();
-  const BANDS = ['Core','Satellite','Opportunistic','Speculative','Unclassified'];
-  
   root.innerHTML = `
-    ${SectionHeader('Positions', 'Open positions &amp; cash sleeve')}
-
-    <!-- Asset Class Performance Chart -->
-    <div class="chart-card section-gap" id="acPerfCard">
-      <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:1.25rem;flex-wrap:wrap;gap:.75rem">
-        <div>
-          <div class="chart-title" style="margin-bottom:.25rem">Asset Class Historical Performance</div>
-          <div style="font-size:.75rem;color:var(--color-text-muted)">Growth % from cost basis · adjusts for entries, exits &amp; rebalances</div>
-        </div>
-        <div id="acPerfBtns" style="display:flex;gap:.4rem;flex-wrap:wrap"></div>
-      </div>
-      <div class="chart-wrap" style="height:280px"><canvas id="acPerfCanvas"></canvas></div>
-    </div>
-
-    <!-- Open Positions Table -->
+    ${SectionHeader('Positions', 'Open investment positions')}
     <div class="table-card section-gap">
       <div class="table-header">
         <h2>Open Positions</h2>
-        <div style="display:flex;gap:.5rem;align-items:center">
-          <select id="dashPosAssetFilter" class="dash-pos-filter-select"
-             
-    onchange="window._dashPosFilters.assetClass=this.value;applyDashPosFilters()">
-            <option value="All Classes">All Classes</option>
-            ${uniqueClasses.map(c => `<option value="${c}"${window._dashPosFilters.assetClass===c?' selected':''}>${c}<\/option>`).join('')}
-          </select>
-          <select id="dashPosBandFilter" class="dash-pos-filter-select"
-           
-    onchange="window._dashPosFilters.band=this.value;applyDashPosFilters()">
-            <option value="All Bands">All Bands</option>
-            ${BANDS.map(b => `<option value="${b}"${window._dashPosFilters.band===b?' selected':''}>${b}<\/option>`).join('')}
-         </select>
-         <button id="dashPosBreachToggle"
-                 class="btn ${window._dashPosFilters.breachOnly ? 'btn-primary' : 'btn-outline'}"
-            
-    onclick="window._dashPosFilters.breachOnly=!window._dashPosFilters.breachOnly;this.className='btn '+(window._dashPosFilters.breachOnly?'btn-primary':'btn-outline');applyDashPosFilters()">
-            Breaches Only
-          </button>
-        </div>
       </div>
-      <div id="dashPosTableWrap"></div>
+      <div id="posTableWrap"></div>
     </div>
-
-    <!-- Cash & Cash Equivalents Box -->
+    ${ccePositions.length ? `
     <div class="table-card section-gap">
-      <div class="table-header">
+      <div class="table-header" style="justify-content:space-between">
         <h2>Cash &amp; Cash Equivalents</h2>
-        <div style="display:flex;gap:1.5rem;align-items:center">
-          <div class="cce-stat">
-            <span class="cce-stat-label">Uninvested Cash</span>
-            <span class="cce-stat-value">${fmt(uninvested, 0)}</span>
-          </div>
-          <div class="cce-stat">
-            <span class="cce-stat-label">C&amp;CE Instruments</span>
-            <span class="cce-stat-value">${fmt(cceMV, 0)}</span>
-          </div>
-          <div style="width:1px;height:2rem;background:var(--color-divider)"></div>
-          <div class="cce-stat">
-            <span class="cce-stat-label">Total C&amp;CE</span>
-            <span class="cce-total-value">${fmt(cceTotal, 0)}</span>
-          </div>
-          <div class="cce-stat">
-            <span class="cce-stat-label">% of NAV</span>
-            <span class="cce-stat-value">${fmtPctRaw(navTotal > 0 ? (cceTotal / navTotal * 100) : 0)}</span>
-          </div>
+        <div class="cce-stat">
+          <span class="cce-stat-label">Total C&amp;CE</span>
+          <span class="cce-total-value">${fmt(cceTotal, 0)}</span>
         </div>
       </div>
-      <div id="posCCETableWrap"></div>
-    </div>
-
-    <!-- Income Received Box -->
-    <div class="table-card section-gap">
-      <div class="table-header">
-        <h2>Income Received</h2>
-        <div style="display:flex;gap:1.5rem;align-items:center">
-          <div class="cce-stat">
-            <span class="cce-stat-label">Dividends</span>
-            <span class="cce-stat-value">${fmt(divIncome, 0)}</span>
-          </div>
-          <div class="cce-stat">
-            <span class="cce-stat-label">Coupons</span>
-            <span class="cce-stat-value">${fmt(couponIncome, 0)}</span>
-          </div>
-          <div style="width:1px;height:2rem;background:var(--color-divider)"></div>
-          <div class="cce-stat">
-            <span class="cce-stat-label">Total Income</span>
-            <span class="cce-total-value">${fmt(totalIncome, 0)}</span>
-          </div>
-        </div>
-      </div>
-      <div id="posIncomeTableWrap"></div>
-    </div>
+      <div id="cceTableWrap"></div>
+    </div>` : ''}
   `;
 
-  // ── C&CE Table ────────────────────────────────────────────────────────────
-  const cceWrap = document.getElementById('posCCETableWrap');
-  if (cceWrap) {
-    const cceCols = [
-      {
-        key: 'name', label: 'Name / Ticker',
-        render: (val, row) => `<strong>${val}<\/strong><br><span style="font-size:.7rem;color:var(--color-text-muted)">${row.ticker}<\/span>`
-      },
+  const posColumns = _buildPosColumns();
+  const posOptions = {
+    rowClass: row => {
+      if (row.flags && (row.flags.includes('EXIT_REVIEW') || row.flags.includes('WATCH_60D'))) return 'row-exit';
+      if (row.sizing_breach) return 'row-breach';
+      return '';
+    },
+    rowClick: row => `window.location.hash='#/positions/${row.ticker}'`,
+    emptyMessage: 'No open positions found.'
+  };
+
+  const posWrap = document.getElementById('posTableWrap');
+  if (posWrap) posWrap.innerHTML = DataTable(posColumns, positions, posOptions);
+
+  if (ccePositions.length) {
+    const cceColumns = [
+      { key: 'name', label: 'Name', render: (val, row) => `<strong>${val}<\/strong><br><span style="font-size:.7rem;color:var(--color-text-muted)">${row.ticker}<\/span>` },
+      { key: 'asset_class', label: 'Class', render: val => `<span class="badge ${badgeAssetClass(val)}">${val}<\/span>` },
+      { key: 'quantity', label: 'Qty', render: val => Number(val).toFixed(0) },
+      { key: 'avg_price', label: 'Avg Price', render: (val, row) => `${row.currency} ${Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4})}` },
+      { key: 'live_price', label: 'Live Price', render: (val, row) => val != null ? `${row.currency} ${Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4})}` : '-' },
       { key: 'mv_usd', label: 'Market Value', render: val => fmt(val, 0) },
-      { key: 'weight_pct', label: '% of NAV', render: val => fmtPctRaw(val) },
-      {
-        key: 'avg_price', label: 'Avg Price',
-        render: (val, row) => `${row.currency} ${Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4})}`
-      },
-      {
-        key: 'live_price', label: 'Live Price',
-        render: (val, row) => val != null
-          ? `${row.currency} ${Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4})}`
-          : '-'
-      },
       { key: 'unreal_pnl', label: 'Unrealised P&L', render: val => `<span class="${val >= 0 ? 'up' : 'down'}">${fmt(val, 0)}<\/span>` },
-      { key: 'unreal_pct', label: 'Return %', render: val => `<span class="${val >= 0 ? 'up' : 'down'}">${fmtPct(val)}<\/span>` },
-      { key: 'open_date', label: 'Open Date' }
+      { key: 'weight_pct', label: 'Weight %', render: val => fmtPctRaw(val) }
     ];
-    cceWrap.innerHTML = !ccePositions.length
-      ? EmptyState('💵', 'No C&CE instruments deployed',
-          'Add rows with asset_class "C&CE" to your trades sheet to populate this table. Uninvested cash is shown in the header above.')
-      : DataTable(cceCols, ccePositions, {});
+    const cceWrap = document.getElementById('cceTableWrap');
+    if (cceWrap) cceWrap.innerHTML = DataTable(cceColumns, ccePositions, { emptyMessage: 'No C&CE positions.' });
   }
-
-  // ── Income Table ──────────────────────────────────────────────────────────
-  const incomeWrap = document.getElementById('posIncomeTableWrap');
-  if (incomeWrap) {
-    const incomeCols = [
-      { key: 'date', label: 'Date', render: val => val || '-' },
-      {
-        key: 'income_type', label: 'Type',
-        render: val => Badge(val, val === 'Dividend' ? 'success' : 'purple')
-      },
-      {
-        key: 'note', label: 'Source',
-        render: val => `<span style="font-weight:500">${val || '-'}<\/span>`
-      },
-      {
-        key: 'currency', label: 'Currency',
-        render: val => Badge(val, 'default')
-      },
-      {
-        key: 'cash_usd', label: 'Amount (EUR)',
-        render: val => `<span class="up">${fmt(val, 0)}<\/span>`
-      }
-    ];
-    incomeWrap.innerHTML = !incomeRecords.length
-      ? EmptyState('💰', 'No income recorded',
-          'Dividend and coupon payments logged in the dividends_coupons sheet will appear here.')
-      : DataTable(incomeCols, incomeRecords, {
-          emptyMessage: 'No income records to display.'
-        });
-  }
-  applyDashPosFilters();
-
-  // ── Asset Class Performance Chart ─────────────────────────────────────────
-  (function buildAcPerfChart() {
-    const acData  = getAcPerfData();
-    const heldClasses = new Set(
-      getOpenPositions()
-        .map(p => p.asset_class)
-        .filter(Boolean)
-    );
-    const classes = Object.keys(acData).filter(ac =>
-      acData[ac]?.length > 0 && heldClasses.has(ac)
-    );
-    if (!classes.length) {
-      const card = document.getElementById('acPerfCard');
-      if (card) card.innerHTML = EmptyState('📊', 'No performance data', 'Asset class series will appear once the new endpoint is deployed.');
-      return;
-    }
-    const AC_COLORS = {
-      'Equity':         '#58a6ff',
-      'Fixed Income':   '#d29922',
-      'Infrastructure': '#ffa657',
-      'Commodity':      '#bc8cff',
-      'Energy/Utilities':         '#3fb950',
-      'C&CE':    '#4f98a3',
-    };
-    const fallbacks = ['#58a6ff','#d29922','#ffa657','#bc8cff','#3fb950','#f85149','#4f98a3'];
-    const colorFor  = (ac, i) => AC_COLORS[ac] || fallbacks[i % fallbacks.length];
-    if (!window._acPerfActive || !classes.includes(window._acPerfActive)) {
-      window._acPerfActive = classes[0];
-    }
-    const btnWrap = document.getElementById('acPerfBtns');
-    if (btnWrap) {
-      btnWrap.innerHTML = classes.map((ac, i) => {
-        const col = colorFor(ac, i);
-        const isActive = ac === window._acPerfActive;
-        return `<button
-          class="btn ${isActive ? 'btn-primary' : 'btn-outline'} ac-perf-btn"
-          data-ac="${ac}"
-          style="${isActive ? `background:${col};border-color:${col};color:#fff` : ''}"
-          onclick="window._switchAcPerf('${ac}')">${ac}</button>`;
-      }).join('');
-    }
-    // Compute global Y bounds across ALL asset classes
-    function getGlobalYBounds() {
-      let globalMin = Infinity;
-      let globalMax = -Infinity;
-      classes.forEach(ac => {
-        acData[ac]
-          .filter(p => p.growth_pct != null && isFinite(p.growth_pct))
-          .forEach(p => {
-            if (p.growth_pct < globalMin) globalMin = p.growth_pct;
-            if (p.growth_pct > globalMax) globalMax = p.growth_pct;
-          });
-      });
-      const padding = (globalMax - globalMin) * 0.05 || 1;
-      return { min: globalMin - padding, max: globalMax + padding };
-    }
-
-    const { min: yMin, max: yMax } = getGlobalYBounds();
-    
-    function buildDatasets(selected) {
-      return classes.map((ac, i) => ({
-        label: ac,
-        data: acData[ac]
-          .filter(p => p.growth_pct != null && isFinite(p.growth_pct))
-          .map(p => ({ x: p.date, y: p.growth_pct })),
-        borderColor: colorFor(ac, i),
-        backgroundColor: colorFor(ac, i) + '18',
-        borderWidth: ac === selected ? 2 : 0,
-        fill: ac === selected,
-        tension: .35,
-        hidden: ac !== selected,
-      }));
-    }
-    const c = chartDefaults();
-    const ctx = document.getElementById('acPerfCanvas')?.getContext('2d');
-    if (!ctx) return;
-    destroyChartSafe(acPerfChart);
-    acPerfChart = new Chart(ctx, {
-      type: 'line',
-      data: { datasets: buildDatasets(window._acPerfActive) },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        elements: {          // <-- ADD THIS
-          point: {
-            radius: 0,
-            hoverRadius: 5,
-          }
-        },
-        interaction: { mode: 'index', intersect: false },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            backgroundColor: c.tooltip_bg,
-            borderColor: c.tooltip_border,
-            borderWidth: 1,
-            titleColor: c.text,
-            bodyColor: c.text,
-            callbacks: {
-              label: ctx => {
-                const v = ctx.parsed.y;
-                return ' ' + ctx.dataset.label + ': ' + (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
-              }
-            }
-          }
-        },
-        scales: {
-          x: {
-            type: 'time',
-            time: { unit: 'month' },
-            grid: { color: c.grid },
-            ticks: { color: c.text, font: { size: 11 } }
-          },
-          y: {
-            min: yMin,
-            max: yMax,
-            grid: { color: c.grid },
-            ticks: {
-              color: c.text,
-              font: { size: 11 },
-              callback: v => (v >= 0 ? '+' : '') + v.toFixed(1) + '%'
-            }
-          }
-        }
-      }
-    });
-    window._switchAcPerf = function(selected) {
-      window._acPerfActive = selected;
-      document.querySelectorAll('.ac-perf-btn').forEach((btn, i) => {
-        const ac  = btn.dataset.ac;
-        const col = colorFor(ac, i);
-        const on  = ac === selected;
-        btn.className = 'btn ' + (on ? 'btn-primary' : 'btn-outline') + ' ac-perf-btn';
-        btn.style.cssText = on ? `background:${col};border-color:${col};color:#fff` : '';
-      });
-      acPerfChart.data.datasets = buildDatasets(selected);
-      acPerfChart.update('active');
-    };
-  })();
 }
 
-function renderPositionDetail(root, ticker) { root.innerHTML = `<p style="padding:2rem;color:var(--color-text-muted)">Position: ${ticker}<\/p>`; }
-function renderTrades(root)        { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Trades - coming in next version<\/p>'; }
-function renderRiskGovernance(root){ root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">Risk Management &amp; Governance - coming in next version<\/p>'; }
-function renderAbout(root)         { root.innerHTML = '<p style="padding:2rem;color:var(--color-text-muted)">About - coming in next version<\/p>'; }
+// ════════════════════════════════════════════════════════════════════════════
+// SECTION 10 - POSITION DETAIL
+// ════════════════════════════════════════════════════════════════════════════
+function renderPositionDetail(root, ticker) {
+  const pos = getOpenPositions().find(p => p.ticker === ticker);
+  if (!pos) {
+    root.innerHTML = `<div class="empty-state"><div class="empty-icon">🔍</div><strong>Position not found</strong><p>No open position found for ticker ${ticker}.<\/p><a href="#/positions" class="btn btn-primary" style="margin-top:1rem">Back to Positions<\/a><\/div>`;
+    return;
+  }
+  const rationale = (window._rationaleData || []).find(r => r.ticker === ticker);
+  root.innerHTML = `
+    ${SectionHeader(pos.name, pos.ticker + ' · ' + pos.asset_class, `<a href="#/positions" class="btn btn-outline">← Back<\/a>`)}
+    <div class="grid-2 section-gap">
+      ${MetricCard('Market Value', fmt(pos.mv_usd, 0))}
+      ${MetricCard('Unrealised P&L', fmt(pos.unreal_pnl, 0), '', { text: fmtPct(pos.unreal_pct), cls: pos.unreal_pnl >= 0 ? 'up' : 'down' }, pos.unreal_pnl >= 0 ? 'success' : 'danger')}
+      ${MetricCard('Weight', fmtPctRaw(pos.weight_pct))}
+      ${MetricCard('Days Held', pos.open_date ? Math.round((Date.now() - new Date(pos.open_date)) / 86400000) : '-')}
+    </div>
+    <div class="table-card section-gap">
+      <div class="table-header"><h2>Position Details<\/h2><\/div>
+      <div class="table-wrap">
+        <table>
+          <tbody>
+            <tr><td style="color:var(--color-text-muted);width:200px">Ticker<\/td><td>${pos.ticker}<\/td><\/tr>
+            <tr><td style="color:var(--color-text-muted)">Asset Class<\/td><td><span class="badge ${badgeAssetClass(pos.asset_class)}">${pos.asset_class}<\/span><\/td><\/tr>
+            <tr><td style="color:var(--color-text-muted)">Direction<\/td><td>${Badge(pos.direction, pos.direction === 'LONG' ? 'success' : 'danger')}<\/td><\/tr>
+            <tr><td style="color:var(--color-text-muted)">Quantity<\/td><td>${Number(pos.quantity).toFixed(0)}<\/td><\/tr>
+            <tr><td style="color:var(--color-text-muted)">Avg Entry Price<\/td><td>${pos.currency} ${Number(pos.avg_price).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4})}<\/td><\/tr>
+            <tr><td style="color:var(--color-text-muted)">Live Price<\/td><td>${pos.live_price != null ? pos.currency + ' ' + Number(pos.live_price).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}) : '-'}<\/td><\/tr>
+            <tr><td style="color:var(--color-text-muted)">Sizing Band<\/td><td>${Badge(pos.sizing_band, {Core:'success',Satellite:'blue',Opportunistic:'default',Speculative:'purple',Unclassified:'warning'}[pos.sizing_band]||'default')}<\/td><\/tr>
+            <tr><td style="color:var(--color-text-muted)">Band Status<\/td><td>${Badge(pos.sizing_breach ? 'Breach' : 'Within limits', pos.sizing_breach ? 'warning' : 'success')}<\/td><\/tr>
+            <tr><td style="color:var(--color-text-muted)">Open Date<\/td><td>${pos.open_date || '-'}<\/td><\/tr>
+            <tr><td style="color:var(--color-text-muted)">Flags<\/td><td>${pos.flags && pos.flags.length ? pos.flags.map(f => FlagBadge(f)).join(' ') : '-'}<\/td><\/tr>
+          <\/tbody>
+        <\/table>
+      <\/div>
+    <\/div>
+    ${rationale ? `
+    <div class="table-card section-gap">
+      <div class="table-header"><h2>Trade Rationale<\/h2><\/div>
+      <div style="padding:1.25rem 1.5rem">
+        ${rationale.thesis ? `<p style="margin-bottom:.75rem"><strong>Thesis:<\/strong> ${rationale.thesis}<\/p>` : ''}
+        ${rationale.catalysts ? `<p style="margin-bottom:.75rem"><strong>Catalysts:<\/strong> ${rationale.catalysts}<\/p>` : ''}
+        ${rationale.risks ? `<p style="margin-bottom:.75rem"><strong>Risks:<\/strong> ${rationale.risks}<\/p>` : ''}
+        ${rationale.exit_criteria ? `<p><strong>Exit Criteria:<\/strong> ${rationale.exit_criteria}<\/p>` : ''}
+      <\/div>
+    <\/div>` : ''}
+  `;
+}
 
 // ════════════════════════════════════════════════════════════════════════════
-// SECTION 10 - HAMBURGER & APP INIT
+// SECTION 11 - TRADES
 // ════════════════════════════════════════════════════════════════════════════
-document.getElementById('hamburgerBtn').addEventListener('click', () => {
-  document.getElementById('mobileNav').classList.toggle('open');
+function renderTrades(root) {
+  const closed = [...getClosedTrades()].sort((a, b) => new Date(b.date) - new Date(a.date));
+  root.innerHTML = `
+    ${SectionHeader('Trades', 'Closed trade history')}
+    <div class="table-card section-gap">
+      <div class="table-header"><h2>Closed Trades<\/h2><\/div>
+      <div id="tradesTableWrap"><\/div>
+    <\/div>
+  `;
+  const columns = [
+    { key: 'date', label: 'Date', render: val => val || '-' },
+    { key: 'name', label: 'Name / Ticker', render: (val, row) => `<strong>${val}<\/strong><br><span style="font-size:.7rem;color:var(--color-text-muted)">${row.ticker}<\/span>` },
+    { key: 'asset_class', label: 'Class', render: val => `<span class="badge ${badgeAssetClass(val)}">${val || '-'}<\/span>` },
+    { key: 'qty', label: 'Qty', render: val => Number(val).toFixed(0) },
+    { key: 'entry_price', label: 'Entry', render: val => val != null ? Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}) : '-' },
+    { key: 'exit_price', label: 'Exit', render: val => val != null ? Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}) : '-' },
+    { key: 'realised_pnl_usd', label: 'Realised P&L', render: val => `<span class="${val >= 0 ? 'up' : 'down'}">${fmt(val, 0)}<\/span>` },
+    { key: 'entry_price', label: 'Return %', render: (val, row) => val && row.exit_price ? fmtPct(((row.exit_price - val) / val) * 100) : '-' }
+  ];
+  const opts = {
+    rowClass: row => row.realised_pnl_usd > 0 ? 'row-profit' : row.realised_pnl_usd < 0 ? 'row-loss' : '',
+    emptyMessage: 'No closed trades yet.'
+  };
+  const wrap = document.getElementById('tradesTableWrap');
+  if (wrap) wrap.innerHTML = DataTable(columns, closed, opts);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SECTION 12 - RISK & GOVERNANCE
+// ════════════════════════════════════════════════════════════════════════════
+function renderRiskGovernance(root) {
+  const metrics = getMetrics();
+  const sizing  = getSizingPolicy();
+  const fx      = getFxExposure();
+
+  root.innerHTML = `
+    ${SectionHeader('Risk Management &amp; Governance', 'Portfolio risk metrics and investment policies')}
+
+    <div class="kpi-grid section-gap">
+      ${MetricCard('Max Drawdown %', metrics.max_drawdown_pct != null ? fmtPctRaw(metrics.max_drawdown_pct) : '-', '', null, metrics.max_drawdown_pct > 10 ? 'danger' : metrics.max_drawdown_pct > 5 ? 'warning' : 'success')}
+      ${MetricCard('30d Volatility %', metrics.rolling_30d_vol != null ? fmtPctRaw(metrics.rolling_30d_vol) : '-')}
+      ${MetricCard('Sharpe Ratio', metrics.Sharpe_ratio != null ? Number(metrics.Sharpe_ratio).toFixed(2) : '-')}
+      ${MetricCard('Sortino Ratio', metrics.sortino_ratio != null ? Number(metrics.sortino_ratio).toFixed(2) : '-')}
+    </div>
+
+    <div class="grid-2 section-gap">
+      <div>
+        <div class="section-header"><div class="section-header-left"><h2 style="font-size:1rem">Sizing Policy</h2></div></div>
+        ${sizing && Object.keys(sizing).length ? `
+        <div class="table-card">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Band</th><th>Min %</th><th>Max %</th><\/tr><\/thead>
+              <tbody>
+                ${Object.entries(sizing).map(([band, limits]) =>
+                  `<tr><td>${Badge(band, {Core:'success',Satellite:'blue',Opportunistic:'default',Speculative:'purple',Unclassified:'warning'}[band]||'default')}<\/td><td>${limits.min != null ? fmtPctRaw(limits.min) : '-'}<\/td><td>${limits.max != null ? fmtPctRaw(limits.max) : '-'}<\/td><\/tr>`
+                ).join('')}
+              <\/tbody>
+            <\/table>
+          <\/div>
+        <\/div>` : PlaceholderSection('Sizing Policy', 'Define position sizing bands and limits in your backend.')}
+      </div>
+      <div>
+        <div class="section-header"><div class="section-header-left"><h2 style="font-size:1rem">FX Exposure</h2></div></div>
+        ${fx && Object.keys(fx).length ? `
+        <div class="table-card">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Currency</th><th>Exposure %</th><\/tr><\/thead>
+              <tbody>
+                ${Object.entries(fx).map(([ccy, pct]) =>
+                  `<tr><td>${ccy}<\/td><td>${fmtPctRaw(pct)}<\/td><\/tr>`
+                ).join('')}
+              <\/tbody>
+            <\/table>
+          <\/div>
+        <\/div>` : PlaceholderSection('FX Exposure', 'FX exposure data will appear here once positions are loaded.')}
+      </div>
+    </div>
+
+    <div class="section-header" style="margin-top:1rem"><div class="section-header-left"><h2>Investment Policies</h2></div></div>
+    <div class="grid-3 section-gap">
+      ${PolicyStatusCard('Investment Mandate', 'Draft', 'warning', MANDATE.objective, 'Edit mandate', '#/about')}
+      ${PolicyStatusCard('Risk Budget', 'Draft', 'warning', MANDATE.riskBudget)}
+      ${PolicyStatusCard('Universe', 'Active', 'success', MANDATE.universe)}
+    </div>
+  `;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SECTION 13 - ABOUT
+// ════════════════════════════════════════════════════════════════════════════
+function renderAbout(root) {
+  root.innerHTML = `
+    ${SectionHeader('About', 'Fund overview and disclosures')}
+    <div class="grid-2 section-gap">
+      <div class="policy-card">
+        <div class="policy-card-header"><span class="policy-card-title">Fund Manager</span></div>
+        <div class="policy-card-desc">${ABOUT_CONTENT.bio}</div>
+        ${ABOUT_CONTENT.contact ? `<div class="policy-card-action"><a href="${ABOUT_CONTENT.contact}" target="_blank">Contact / LinkedIn ↗<\/a><\/div>` : ''}
+      </div>
+      <div class="policy-card">
+        <div class="policy-card-header"><span class="policy-card-title">Benchmark</span>${Badge('50:50 Blend','info')}</div>
+        <div class="policy-card-desc">${MANDATE.benchmark}</div>
+      </div>
+    </div>
+    <div class="alert-panel alert-info section-gap">
+      <strong>Disclaimer:<\/strong> ${ABOUT_CONTENT.disclaimer}
+    </div>
+    ${CHANGELOG.length ? `
+    <div class="table-card section-gap">
+      <div class="table-header"><h2>Changelog<\/h2><\/div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Date<\/th><th>Change<\/th><th>Commit<\/th><\/tr><\/thead>
+          <tbody>
+            ${CHANGELOG.map(c => `<tr><td>${c.date}<\/td><td>${c.change}<\/td><td><code>${c.commit}<\/code><\/td><\/tr>`).join('')}
+          <\/tbody>
+        <\/table>
+      <\/div>
+    <\/div>` : ''}
+  `;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SECTION 14 - HAMBURGER
+// ════════════════════════════════════════════════════════════════════════════
+document.getElementById('hamburgerBtn')?.addEventListener('click', () => {
+  document.getElementById('mobileNav')?.classList.toggle('open');
 });
 
-async function init() {
+// ════════════════════════════════════════════════════════════════════════════
+// SECTION 15 - BOOT
+// ════════════════════════════════════════════════════════════════════════════
+(async function boot() {
+  const loading = document.getElementById('loadingScreen');
+  const errorBanner = document.getElementById('errorBanner');
+  const root = document.getElementById('appRoot');
+
   try {
     await Promise.all([fetchPortfolio(), fetchTradeRationale(), fetchAcPerformance()]);
-    document.getElementById('loadingScreen').classList.add('hidden');
-    document.getElementById('lastUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+
+    // Update footer timestamp
+    const lastUpdated = document.getElementById('lastUpdated');
+    if (lastUpdated && window._portfolioData?.last_updated) {
+      lastUpdated.textContent = 'Last updated: ' + window._portfolioData.last_updated;
+    }
+
+    // Initial route render
     const { handler, param } = getRoute();
     const path = (window.location.hash || '#/overview').replace('#','');
     updateActiveNav(path);
-    handler(document.getElementById('appRoot'), param);
-  } catch(e) {
-    document.getElementById('loadingScreen').classList.add('hidden');
-    const b = document.getElementById('errorBanner');
-    b.style.display = 'block';
-    b.textContent = 'Could not load portfolio data: ' + e.message;
-  }
-}
+    handler(root, param);
 
-init();
+  } catch (err) {
+    errorBanner.style.display = 'block';
+    errorBanner.textContent = 'Failed to load portfolio data: ' + err.message;
+    console.error(err);
+    // Still render the route so navigation works
+    const { handler, param } = getRoute();
+    const path = (window.location.hash || '#/overview').replace('#','');
+    updateActiveNav(path);
+    try { handler(root, param); } catch(e) {}
+  } finally {
+    loading.classList.add('hidden');
+  }
+})();
 </script>
 </body>
 </html>
