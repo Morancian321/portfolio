@@ -1390,8 +1390,15 @@ function renderPositions(root) {
         btn.className = 'btn ' + (on ? 'btn-primary' : 'btn-outline') + ' ac-perf-btn';
         btn.style.cssText = on ? `background:${col};border-color:${col};color:#fff` : '';
       });
-      acPerfChart.data.datasets = buildDatasets(selected);
-      acPerfChart.update('active');
+      acPerfChart.data.datasets.forEach((ds, i) => {
+        const on = ds.label === selected;
+        ds.borderWidth = on ? 2 : 0;
+        ds.fill = on;
+        ds.pointRadius = 0;
+        ds.pointHoverRadius = 5;
+        acPerfChart.setDatasetVisibility(i, on);
+      });
+      acPerfChart.update();
     };
   })();
 }
