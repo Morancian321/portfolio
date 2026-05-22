@@ -1286,8 +1286,9 @@ function renderPositions(root) {
     };
     const fallbacks = ['#58a6ff','#d29922','#ffa657','#bc8cff','#3fb950','#f85149','#4f98a3'];
     const colorFor  = (ac, i) => AC_COLORS[ac] || fallbacks[i % fallbacks.length];
-    if (!window._acPerfActive || !classes.includes(window._acPerfActive)) {
-      window._acPerfActive = classes[0];
+    if (!window._acPerfActive || (!classes.includes(window._acPerfActive) && window._acPerfActive !== 'All')) {
+      window._acPerfActive = 'All';
+    }
     }
     const btnWrap = document.getElementById('acPerfBtns');
     if (btnWrap) {
