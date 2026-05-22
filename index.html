@@ -1291,7 +1291,9 @@ function renderPositions(root) {
     }
     const btnWrap = document.getElementById('acPerfBtns');
     if (btnWrap) {
-      btnWrap.innerHTML = classes.map((ac, i) => {
+      const allActive = window._acPerfActive === 'All';
+      const allBtn = `<button class="btn ${allActive ? 'btn-primary' : 'btn-outline'} ac-perf-btn" data-ac="All" onclick="window._switchAcPerf('All')">All</button>`;
+      btnWrap.innerHTML = allBtn + classes.map((ac, i) => {
         const col = colorFor(ac, i);
         const isActive = ac === window._acPerfActive;
         return `<button
@@ -1320,6 +1322,7 @@ function renderPositions(root) {
     const { min: yMin, max: yMax } = getGlobalYBounds();
     
     function buildDatasets(selected) {
+      const showAll = selected === 'All';
       return classes.map((ac, i) => ({
         label: ac,
         data: acData[ac]
@@ -1327,11 +1330,11 @@ function renderPositions(root) {
           .map(p => ({ x: p.date, y: p.growth_pct })),
         borderColor: colorFor(ac, i),
         backgroundColor: colorFor(ac, i) + '18',
-        borderWidth: ac === selected ? 2 : 0,
-        fill: ac === selected,
+        borderWidth: showAll ? 1.5 : (ac === selected ? 2 : 0),
+        fill: false,
         tension: .35,
-        hidden: ac !== selected,
-        pointRadius: 0,          
+        hidden: showAll ? false : ac !== selected,
+        pointRadius: 0,
         pointHoverRadius: 5,
       }));
     }
@@ -1391,10 +1394,11 @@ function renderPositions(root) {
         btn.className = 'btn ' + (on ? 'btn-primary' : 'btn-outline') + ' ac-perf-btn';
         btn.style.cssText = on ? `background:${col};border-color:${col};color:#fff` : '';
       });
+      const showAll = selected === 'All';
       acPerfChart.data.datasets.forEach((ds, i) => {
-        const on = ds.label === selected;
-        ds.borderWidth = on ? 2 : 0;
-        ds.fill = on;
+        const on = showAll || ds.label === selected;
+        ds.borderWidth = showAll ? 1.5 : (on ? 2 : 0);
+        ds.fill = false;
         ds.pointRadius = 0;
         ds.pointHoverRadius = 5;
         acPerfChart.setDatasetVisibility(i, on);
