@@ -913,6 +913,7 @@ def asset_class_performance():
             events_by_date[t["date"]].append(t)
 
         ac_holdings = defaultdict(dict)
+        ac_cost_usd = defaultdict(float)   
         ticker_ac_map = {}
         for t in trades:
             tk = t["ticker"]
@@ -942,6 +943,7 @@ def asset_class_performance():
                 if action == "OPEN":
                     holdings[tk] = {"qty": qty, "yf_ticker": ytk,
                                     "currency": currency, "avg_cost_base": price_base}
+                    ac_cost_usd[ac] += p_usd * qty
                 elif action == "ADD":
                     if tk in holdings:
                         old = holdings[tk]
@@ -952,23 +954,27 @@ def asset_class_performance():
                     else:
                         holdings[tk] = {"qty": qty, "yf_ticker": ytk,
                                         "currency": currency, "avg_cost_base": price_base}
+                    ac_cost_usd[ac] += p_usd * qty
                 elif action == "REDUCE":
                     if tk in holdings:
+                        proportion = qty / holdings[tk]["qty"]
+                        ac_cost_usd[ac] -= ac_cost_usd[ac] * proportion
                         holdings[tk]["qty"] -= qty
                         if holdings[tk]["qty"] <= 0:
                             del holdings[tk]
                 elif action == "CLOSE":
-                    holdings.pop(tk, None)
+                    if tk in holdings:
+                        h = holdings[tk]
+                        ticker_cost = h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
+                        ac_cost_usd[ac] = max(0.0, ac_cost_usd[ac] - ticker_cost)
+                        holdings.pop(tk, None)
 
             is_inception_day = (ds == inception.strftime("%Y-%m-%d"))
 
             for ac, holdings in ac_holdings.items():
                 if not holdings:
                     continue
-                invested = sum(
-                    h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
-                    for h in holdings.values()
-                )
+                invested = ac_cost_usd[ac]
                 if invested <= 0:
                     continue
 
