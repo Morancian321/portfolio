@@ -1330,6 +1330,8 @@ function renderPositions(root) {
         fill: ac === selected,
         tension: .35,
         hidden: ac !== selected,
+        pointRadius: 0,          
+        pointHoverRadius: 5,
       }));
     }
     const c = chartDefaults();
