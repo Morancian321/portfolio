@@ -955,6 +955,7 @@ def asset_class_performance():
 
             # Step 1 — pre-cashflow MV = yesterday's stored closing MV
             pre_cf_mv = dict(ac_mv_prev)
+            cf_net_by_ac = defaultdict(float)  
 
             # Step 2 — apply trades
             ACTION_ORDER = {"CLOSE": 0, "REDUCE": 1, "ADD": 2, "OPEN": 3}
@@ -974,6 +975,8 @@ def asset_class_performance():
                 if action == "OPEN":
                     holdings[tk]  = {"qty": qty, "yf_ticker": ytk,
                                      "currency": currency, "avg_cost_base": price_base}
+                    cf_net_by_ac[ac] += price_base * fx_on_date(currency, dt) * qty
+                    
                 elif action == "ADD":
                     if tk in holdings:
                         old       = holdings[tk]
@@ -984,14 +987,19 @@ def asset_class_performance():
                     else:
                         holdings[tk] = {"qty": qty, "yf_ticker": ytk,
                                         "currency": currency, "avg_cost_base": price_base}
+                    cf_net_by_ac[ac] += price_base * fx_on_date(currency, dt) * qty
+                        
                 elif action == "REDUCE":
                     if tk in holdings:
                         reduce_qty = min(qty, holdings[tk]["qty"])
                         holdings[tk]["qty"] -= reduce_qty
                         if holdings[tk]["qty"] <= 0:
                             del holdings[tk]
+                        cf_net_by_ac[ac] -= price_base * fx_on_date(currency, dt) * qty
+                        
                 elif action == "CLOSE":
                     holdings.pop(tk, None)
+                    cf_net_by_ac[ac] -= price_base * fx_on_date(currency, dt) * qty
 
             # Step 3 — compute today's closing MV, compound TWR factor
             all_active = set(ac_holdings.keys()) | set(pre_cf_mv.keys())
@@ -999,18 +1007,19 @@ def asset_class_performance():
                 holdings  = ac_holdings.get(ac, {})
                 mv_post   = _mv_for_ac(holdings, dt) if holdings else 0.0
                 mv_before = pre_cf_mv.get(ac, 0.0)
+                cf = cf_net_by_ac.get(ac, 0.0)
 
                 if mv_before is None:
                     ac_twr_factor[ac] = 1.0
                     growth_pct = 0.0
                 elif mv_before > 0:
-                    sub_r = (mv_post - mv_before) / mv_before
+                    sub_r = (mv_post - mv_before - cf) / mv_before
                     ac_twr_factor[ac] *= (1.0 + sub_r)
                     growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
                 else:
                     growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
 
-                ac_mv_prev[ac] = mv_post if holdings else None
+                ac_mv_prev[ac] = mv_post if holdings else 0.0
 
                 if holdings or growth_pct != 0.0:
                     ac_series[ac].append({"date": ds, "growth_pct": growth_pct})
