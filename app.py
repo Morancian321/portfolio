@@ -443,7 +443,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
 
     for dt in date_range:
         ds = dt.strftime("%Y-%m-%d")
-        
+
         ACTION_ORDER = {"CLOSE": 0, "REDUCE": 1, "ADD": 2, "OPEN": 3}
         for e in sorted(events_by_date.get(ds, []), key=lambda x: 
         ACTION_ORDER.get(x.get("action", "").upper(), 99)):
@@ -950,11 +950,8 @@ def asset_class_performance():
                     mv += h["avg_cost_base"] * fx_r * h["qty"]
             return mv
 
-        last_bday = date_range[-1] if len(date_range) > 0 else None
-        
         for dt in date_range:
             ds = dt.strftime("%Y-%m-%d")
-            is_final_date = (dt == last_bday)
 
             # Step 1 — pre-cashflow MV = yesterday's stored closing MV
             pre_cf_mv = dict(ac_mv_prev)
@@ -1008,21 +1005,7 @@ def asset_class_performance():
             all_active = set(ac_holdings.keys()) | set(pre_cf_mv.keys())
             for ac in all_active:
                 holdings  = ac_holdings.get(ac, {})
-                if is_final_date and holdings:
-                    mv_post = 0.0
-                    for tk, h in holdings.items():
-                        ytk      = h["yf_ticker"]
-                        currency = h.get("currency", "USD")
-                        fx_r     = fx_rates.get(fx_key(currency), 1.0)
-                        lp       = get_live_price(ytk, manual_map)
-                        if lp is None:
-                            lp = h["avg_cost_base"]
-                        if is_lse_pence(currency):
-                            lp = normalize_gbx_price(lp, h["avg_cost_base"])
-                        mv_post += lp * fx_r * h["qty"]
-                else:
-                    mv_post = _mv_for_ac(holdings, dt) if holdings else 0.0
-               
+                mv_post   = _mv_for_ac(holdings, dt) if holdings else 0.0
                 mv_before = pre_cf_mv.get(ac, 0.0)
                 cf        = cf_net_by_ac.get(ac, 0.0)
 
