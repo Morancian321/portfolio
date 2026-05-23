@@ -1027,9 +1027,17 @@ def asset_class_performance():
 
                 # Bug A fix: on OPEN day, anchor to cost basis not market close
                 if holdings:
-                    ac_mv_prev[ac] = mv_post
+                    is_first_day = (pre_cf_mv.get(ac, 0.0) == 0.0)
+                    if is_first_day:
+                        cost_basis_mv = sum(
+                            h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
+                            for h in holdings.values()
+                        )
+                        ac_mv_prev[ac] = cost_basis_mv
+                    else:
+                        ac_mv_prev[ac] = mv_post
                 else:
-                    ac_mv_prev[ac] = 0.0  # was None — Bug B/2 fix
+                    ac_mv_prev[ac] = 0.0
 
                 if holdings or growth_pct != 0.0:
                     ac_series[ac].append({"date": ds, "growth_pct": growth_pct})
