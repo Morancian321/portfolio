@@ -1015,7 +1015,7 @@ def asset_class_performance():
                 if mv_before is None:
                     growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
                 elif mv_before > 0:
-                    sub_r = (mv_post - mv_before - cf) / mv_before
+                    sub_r = (mv_post - mv_before - cf) / (mv_before + cf)
                     ac_twr_factor[ac] *= (1.0 + sub_r)
                     growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
                 else:
