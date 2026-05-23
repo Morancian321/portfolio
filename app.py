@@ -946,7 +946,7 @@ def asset_class_performance():
                     holdings[tk] = {"qty": qty, "yf_ticker": ytk,
                                     "currency": currency, "avg_cost_base": price_base}
                     
-    ac_cost_basis_usd[ac] += price_base * fx_r * qty  # lock USD cost at open-date FX
+                    ac_cost_basis_usd[ac] += price_base * fx_r * qty  # lock USD cost at open-date FX
     
                 elif action == "ADD":
                     if tk in holdings:
