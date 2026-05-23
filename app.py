@@ -917,8 +917,8 @@ def asset_class_performance():
                 # TWR state
         ac_holdings   = defaultdict(dict)
         ac_twr_factor = defaultdict(lambda: 1.0)
-        ac_mv_prev    = {}          # ac -> MV at end of previous day (post-cashflow)
-        ac_first_day  = set()       # ACs that have been seen at least once
+        ac_mv_prev    = {}
+        ac_first_day  = set()
 
         ticker_ac_map = {}
         for t in trades:
@@ -929,9 +929,9 @@ def asset_class_performance():
         date_range = pd.bdate_range(start=inception, end=today)
         ac_series  = defaultdict(list)
 
-        def _mv_for_ac(ac_holdings_dict, dt):
+        def _mv_for_ac(holdings_dict, dt):
             mv = 0.0
-            for tk, h in ac_holdings_dict.items():
+            for tk, h in holdings_dict.items():
                 ytk      = h["yf_ticker"]
                 currency = h.get("currency", "USD")
                 fx_r     = fx_on_date(currency, dt)
@@ -949,35 +949,34 @@ def asset_class_performance():
         for dt in date_range:
             ds = dt.strftime("%Y-%m-%d")
 
-            # Step 1 — snapshot pre-cashflow MV (yesterday's holdings at today's prices)
-            pre_cf_mv = {ac: _mv_for_ac(h, dt) for ac, h in ac_holdings.items() if h}
+            # Step 1 — pre-cashflow MV = yesterday's stored closing MV
+            pre_cf_mv = dict(ac_mv_prev)
 
             # Step 2 — apply trades
             ACTION_ORDER = {"CLOSE": 0, "REDUCE": 1, "ADD": 2, "OPEN": 3}
             for e in sorted(events_by_date.get(ds, []),
                             key=lambda x: ACTION_ORDER.get(x.get("action", "").upper(), 99)):
-                tk       = e["ticker"]
-                ac       = ticker_ac_map.get(tk) or e.get("asset_class") or "Unknown"
+                tk         = e["ticker"]
+                ac         = ticker_ac_map.get(tk) or e.get("asset_class") or "Unknown"
                 ticker_ac_map[tk] = ac
-                qty      = float(e.get("quantity", 0))
-                price    = float(e.get("price", 0))
-                action   = e.get("action", "").upper()
-                ytk      = e.get("yf_ticker", tk)
-                currency = get_currency(e, ytk)
+                qty        = float(e.get("quantity", 0))
+                price      = float(e.get("price", 0))
+                action     = e.get("action", "").upper()
+                ytk        = e.get("yf_ticker", tk)
+                currency   = get_currency(e, ytk)
                 price_base = price / 100 if is_lse_pence(currency) else price
 
                 holdings = ac_holdings[ac]
                 if action == "OPEN":
-                    if ac not in pre_cf_mv:
-                        pre_cf_mv[ac] = 0.0
-                    holdings[tk] = {"qty": qty, "yf_ticker": ytk,
-                                    "currency": currency, "avg_cost_base": price_base}
+                    pre_cf_mv[ac] = 0.0
+                    holdings[tk]  = {"qty": qty, "yf_ticker": ytk,
+                                     "currency": currency, "avg_cost_base": price_base}
                 elif action == "ADD":
                     if tk in holdings:
                         old       = holdings[tk]
                         total_qty = old["qty"] + qty
                         avg_cost  = (old["avg_cost_base"] * old["qty"] + price_base * qty) / total_qty
-                        holdings[tk]["qty"]          = total_qty
+                        holdings[tk]["qty"]           = total_qty
                         holdings[tk]["avg_cost_base"] = avg_cost
                     else:
                         holdings[tk] = {"qty": qty, "yf_ticker": ytk,
@@ -991,7 +990,7 @@ def asset_class_performance():
                 elif action == "CLOSE":
                     holdings.pop(tk, None)
 
-            # Step 3 — compute post-cashflow MV and compound the TWR factor
+            # Step 3 — compute today's closing MV, compound TWR factor
             all_active = set(ac_holdings.keys()) | set(pre_cf_mv.keys())
             for ac in all_active:
                 holdings  = ac_holdings.get(ac, {})
@@ -999,7 +998,6 @@ def asset_class_performance():
                 mv_before = pre_cf_mv.get(ac, 0.0)
 
                 if ac not in ac_first_day:
-                    # Very first day this AC exists — anchor to 0%
                     ac_twr_factor[ac] = 1.0
                     ac_first_day.add(ac)
                     growth_pct = 0.0
