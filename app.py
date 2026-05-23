@@ -911,7 +911,9 @@ def asset_class_performance():
         events_by_date = defaultdict(list)
         for t in trades:
             events_by_date[t["date"]].append(t)
-
+       
+        ac_realised_usd = defaultdict(float)
+        
         ac_holdings = defaultdict(dict)
         ticker_ac_map = {}
         for t in trades:
@@ -954,11 +956,23 @@ def asset_class_performance():
                                         "currency": currency, "avg_cost_base": price_base}
                 elif action == "REDUCE":
                     if tk in holdings:
-                        holdings[tk]["qty"] -= qty
+                        avg_cost_base = holdings[tk]["avg_cost_base"]
+                        reduce_qty = min(qty, holdings[tk]["qty"])
+                        realised_usd = (price_base - avg_cost_base) * reduce_qty * fx_r
+                        ac_realised_usd[ac] += realised_usd
+
+                        holdings[tk]["qty"] -= reduce_qty
                         if holdings[tk]["qty"] <= 0:
                             del holdings[tk]
+                            
                 elif action == "CLOSE":
-                    holdings.pop(tk, None)
+                    if tk in holdings:
+                        close_qty = holdings[tk]["qty"]
+                        avg_cost_base = holdings[tk]["avg_cost_base"]
+                        realised_usd = (price_base - avg_cost_base) * close_qty * fx_r
+                        ac_realised_usd[ac] += realised_usd
+
+                        holdings.pop(tk, None)
 
             is_inception_day = (ds == inception.strftime("%Y-%m-%d"))
 
@@ -991,7 +1005,7 @@ def asset_class_performance():
                     except:
                         mv += h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
 
-                growth_pct = round((mv - invested) / invested * 100, 4)
+                growth_pct = round((mv + ac_realised_usd[ac] - invested) / invested * 100, 4)
                 ac_series[ac].append({"date": ds, "growth_pct": growth_pct})
 
         inception_str = inception.strftime("%Y-%m-%d")
