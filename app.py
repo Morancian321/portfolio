@@ -973,18 +973,14 @@ def asset_class_performance():
                         holdings[tk]["qty"] -= reduce_qty
                         if holdings[tk]["qty"] <= 0:
                             del holdings[tk]
-                        if not holdings:  # entire asset class now flat — reset accumulators
-                            ac_cost_basis_usd[ac] = 0.0
-                            ac_sale_proceeds_usd[ac] = 0.0
+                        
                             
                 elif action == "CLOSE":
                     if tk in holdings:
                         close_qty = holdings[tk]["qty"]
                         ac_sale_proceeds_usd[ac] += price_base * fx_r * close_qty  # full proceeds
                         holdings.pop(tk, None)
-                        if not holdings:  # entire asset class now flat — reset accumulators
-                            ac_cost_basis_usd[ac] = 0.0
-                            ac_sale_proceeds_usd[ac] = 0.0
+                       
 
             is_inception_day = (ds == inception.strftime("%Y-%m-%d"))
 
