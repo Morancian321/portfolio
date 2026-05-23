@@ -1023,14 +1023,7 @@ def asset_class_performance():
 
                 # Bug A fix: on OPEN day, anchor to cost basis not market close
                 if holdings:
-                    is_fresh_open = (pre_cf_mv.get(ac, 0.0) == 0.0 and cf > 0)
-                    if is_fresh_open:
-                        ac_mv_prev[ac] = sum(
-                            h["avg_cost_base"] * fx_on_date(h["currency"], dt) * h["qty"]
-                            for h in holdings.values()
-                        )
-                    else:
-                        ac_mv_prev[ac] = mv_post
+                    ac_mv_prev[ac] = mv_post
                 else:
                     ac_mv_prev[ac] = 0.0  # was None — Bug B/2 fix
 
