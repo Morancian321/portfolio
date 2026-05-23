@@ -912,7 +912,8 @@ def asset_class_performance():
         for t in trades:
             events_by_date[t["date"]].append(t)
        
-        ac_realised_usd = defaultdict(float)
+        ac_cost_basis_usd = defaultdict(float)
+        ac_sale_proceeds_usd = defaultdict(float)
         
         ac_holdings = defaultdict(dict)
         ticker_ac_map = {}
@@ -944,6 +945,9 @@ def asset_class_performance():
                 if action == "OPEN":
                     holdings[tk] = {"qty": qty, "yf_ticker": ytk,
                                     "currency": currency, "avg_cost_base": price_base}
+                    
+    ac_cost_basis_usd[ac] += price_base * fx_r * qty  # lock USD cost at open-date FX
+    
                 elif action == "ADD":
                     if tk in holdings:
                         old = holdings[tk]
@@ -954,36 +958,38 @@ def asset_class_performance():
                     else:
                         holdings[tk] = {"qty": qty, "yf_ticker": ytk,
                                         "currency": currency, "avg_cost_base": price_base}
+                    ac_cost_basis_usd[ac] += price_base * fx_r * qty  
+
                 elif action == "REDUCE":
                     if tk in holdings:
                         avg_cost_base = holdings[tk]["avg_cost_base"]
                         reduce_qty = min(qty, holdings[tk]["qty"])
-                        realised_usd = (price_base - avg_cost_base) * reduce_qty * fx_r
-                        ac_realised_usd[ac] += realised_usd
+                        ac_sale_proceeds_usd[ac] += price_base * fx_r * reduce_qty  # full proceeds
 
                         holdings[tk]["qty"] -= reduce_qty
                         if holdings[tk]["qty"] <= 0:
                             del holdings[tk]
+                        if not holdings:  # entire asset class now flat — reset accumulators
+                            ac_cost_basis_usd[ac] = 0.0
+                            ac_sale_proceeds_usd[ac] = 0.0
                             
                 elif action == "CLOSE":
                     if tk in holdings:
                         close_qty = holdings[tk]["qty"]
-                        avg_cost_base = holdings[tk]["avg_cost_base"]
-                        realised_usd = (price_base - avg_cost_base) * close_qty * fx_r
-                        ac_realised_usd[ac] += realised_usd
-
+                        ac_sale_proceeds_usd[ac] += price_base * fx_r * close_qty  # full proceeds
                         holdings.pop(tk, None)
+                        if not holdings:  # entire asset class now flat — reset accumulators
+                            ac_cost_basis_usd[ac] = 0.0
+                            ac_sale_proceeds_usd[ac] = 0.0
 
             is_inception_day = (ds == inception.strftime("%Y-%m-%d"))
 
             for ac, holdings in ac_holdings.items():
                 if not holdings:
                     continue
-                invested = sum(
-                    h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
-                    for h in holdings.values()
-                )
-                if invested <= 0:
+                
+                total_cost_basis = ac_cost_basis_usd[ac]
+                if total_cost_basis <= 0:
                     continue
 
                 if is_inception_day:
@@ -1001,11 +1007,15 @@ def asset_class_performance():
                             p_base = normalize_gbx_price(p_raw, h["avg_cost_base"]) if is_lse_pence(currency) else p_raw
                             mv += p_base * fx_r * h["qty"]
                         else:
-                            mv += h["avg_cost_base"] * fx_r * h["qty"]  # fallback: flat
+                            mv += h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
                     except:
                         mv += h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
 
-                growth_pct = round((mv + ac_realised_usd[ac] - invested) / invested * 100, 4)
+
+                growth_pct = round(
+                    (mv + ac_sale_proceeds_usd[ac] - total_cost_basis) / total_cost_basis * 100, 4
+                )
+                
                 ac_series[ac].append({"date": ds, "growth_pct": growth_pct})
 
         inception_str = inception.strftime("%Y-%m-%d")
