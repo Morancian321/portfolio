@@ -972,7 +972,6 @@ def asset_class_performance():
 
                 holdings = ac_holdings[ac]
                 if action == "OPEN":
-                    pre_cf_mv[ac] = 0.0
                     holdings[tk]  = {"qty": qty, "yf_ticker": ytk,
                                      "currency": currency, "avg_cost_base": price_base}
                 elif action == "ADD":
@@ -1001,18 +1000,17 @@ def asset_class_performance():
                 mv_post   = _mv_for_ac(holdings, dt) if holdings else 0.0
                 mv_before = pre_cf_mv.get(ac, 0.0)
 
-                if ac not in ac_first_day:
+                if mv_before is None:
                     ac_twr_factor[ac] = 1.0
-                    ac_first_day.add(ac)
                     growth_pct = 0.0
-                elif mv_before > 0 and holdings:
+                elif mv_before > 0:
                     sub_r = (mv_post - mv_before) / mv_before
                     ac_twr_factor[ac] *= (1.0 + sub_r)
                     growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
                 else:
                     growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
 
-                ac_mv_prev[ac] = mv_post
+                ac_mv_prev[ac] = mv_post if holdings else None
 
                 if holdings or growth_pct != 0.0:
                     ac_series[ac].append({"date": ds, "growth_pct": growth_pct})
