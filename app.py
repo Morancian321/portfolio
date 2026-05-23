@@ -935,13 +935,17 @@ def asset_class_performance():
                 ytk      = h["yf_ticker"]
                 currency = h.get("currency", "USD")
                 fx_r     = fx_on_date(currency, dt)
+                if ytk not in prices.columns:
+                    mv += h["avg_cost_base"] * fx_r * h["qty"]
+                    continue
                 try:
-                    if ytk in prices.columns:
-                        p_raw  = float(prices.loc[:dt, ytk].iloc[-1])
-                        p_base = normalize_gbx_price(p_raw, h["avg_cost_base"]) if is_lse_pence(currency) else p_raw
-                        mv += p_base * fx_r * h["qty"]
-                    else:
+                    subset = prices.loc[:dt, ytk].dropna()
+                    if subset.empty:
                         mv += h["avg_cost_base"] * fx_r * h["qty"]
+                        continue
+                    p_raw  = float(subset.iloc[-1])
+                    p_base = normalize_gbx_price(p_raw, h["avg_cost_base"]) if is_lse_pence(currency) else p_raw
+                    mv += p_base * fx_r * h["qty"]
                 except:
                     mv += h["avg_cost_base"] * fx_r * h["qty"]
             return mv
