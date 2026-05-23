@@ -444,7 +444,9 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
     for dt in date_range:
         ds = dt.strftime("%Y-%m-%d")
 
-        for e in events_by_date.get(ds, []):
+        ACTION_ORDER = {"CLOSE": 0, "REDUCE": 1, "ADD": 2, "OPEN": 3}
+        for e in sorted(events_by_date.get(ds, []), key=lambda x: 
+        ACTION_ORDER.get(x.get("action", "").upper(), 99)):
             tk       = e["ticker"]
             qty      = float(e.get("quantity", 0))
             price    = float(e.get("price", 0))
@@ -928,9 +930,11 @@ def asset_class_performance():
         for dt in date_range:
             ds = dt.strftime("%Y-%m-%d")
 
-            for e in events_by_date.get(ds, []):
+            ACTION_ORDER = {"CLOSE": 0, "REDUCE": 1, "ADD": 2, "OPEN": 3}
+            for e in sorted(events_by_date.get(ds, []), key=lambda x: 
+            ACTION_ORDER.get(x.get("action", "").upper(), 99)):
                 tk       = e["ticker"]
-                ac       = e.get("asset_class") or ticker_ac_map.get(tk, "Unknown")
+                ac = ticker_ac_map.get(tk) or e.get("asset_class") or "Unknown"
                 ticker_ac_map[tk] = ac
                 qty      = float(e.get("quantity", 0))
                 price    = float(e.get("price", 0))
