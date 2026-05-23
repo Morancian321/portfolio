@@ -443,7 +443,6 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
 
     for dt in date_range:
         ds = dt.strftime("%Y-%m-%d")
-        is_final_date = (dt == last_bday)
         
         ACTION_ORDER = {"CLOSE": 0, "REDUCE": 1, "ADD": 2, "OPEN": 3}
         for e in sorted(events_by_date.get(ds, []), key=lambda x: 
@@ -955,6 +954,7 @@ def asset_class_performance():
         
         for dt in date_range:
             ds = dt.strftime("%Y-%m-%d")
+            is_final_date = (dt == last_bday)
 
             # Step 1 — pre-cashflow MV = yesterday's stored closing MV
             pre_cf_mv = dict(ac_mv_prev)
