@@ -914,118 +914,106 @@ def asset_class_performance():
         for t in trades:
             events_by_date[t["date"]].append(t)
        
-        ac_cost_basis_usd = defaultdict(float)
-        ac_sale_proceeds_usd = defaultdict(float)
-        ac_closed_cost_usd   = defaultdict(float)
-        
-        ac_holdings = defaultdict(dict)
+                # TWR state
+        ac_holdings   = defaultdict(dict)
+        ac_twr_factor = defaultdict(lambda: 1.0)
+        ac_mv_prev    = {}          # ac -> MV at end of previous day (post-cashflow)
+        ac_first_day  = set()       # ACs that have been seen at least once
+
         ticker_ac_map = {}
         for t in trades:
             tk = t["ticker"]
             if tk not in ticker_ac_map and t.get("asset_class"):
                 ticker_ac_map[tk] = t["asset_class"]
 
-        date_range  = pd.bdate_range(start=inception, end=today)
-        ac_series = defaultdict(list)
+        date_range = pd.bdate_range(start=inception, end=today)
+        ac_series  = defaultdict(list)
+
+        def _mv_for_ac(ac_holdings_dict, dt):
+            mv = 0.0
+            for tk, h in ac_holdings_dict.items():
+                ytk      = h["yf_ticker"]
+                currency = h.get("currency", "USD")
+                fx_r     = fx_on_date(currency, dt)
+                try:
+                    if ytk in prices.columns:
+                        p_raw  = float(prices.loc[:dt, ytk].iloc[-1])
+                        p_base = normalize_gbx_price(p_raw, h["avg_cost_base"]) if is_lse_pence(currency) else p_raw
+                        mv += p_base * fx_r * h["qty"]
+                    else:
+                        mv += h["avg_cost_base"] * fx_r * h["qty"]
+                except:
+                    mv += h["avg_cost_base"] * fx_r * h["qty"]
+            return mv
 
         for dt in date_range:
             ds = dt.strftime("%Y-%m-%d")
 
+            # Step 1 — snapshot pre-cashflow MV (yesterday's holdings at today's prices)
+            pre_cf_mv = {ac: _mv_for_ac(h, dt) for ac, h in ac_holdings.items() if h}
+
+            # Step 2 — apply trades
             ACTION_ORDER = {"CLOSE": 0, "REDUCE": 1, "ADD": 2, "OPEN": 3}
-            for e in sorted(events_by_date.get(ds, []), key=lambda x: 
-            ACTION_ORDER.get(x.get("action", "").upper(), 99)):
+            for e in sorted(events_by_date.get(ds, []),
+                            key=lambda x: ACTION_ORDER.get(x.get("action", "").upper(), 99)):
                 tk       = e["ticker"]
-                ac = ticker_ac_map.get(tk) or e.get("asset_class") or "Unknown"
+                ac       = ticker_ac_map.get(tk) or e.get("asset_class") or "Unknown"
                 ticker_ac_map[tk] = ac
                 qty      = float(e.get("quantity", 0))
                 price    = float(e.get("price", 0))
                 action   = e.get("action", "").upper()
                 ytk      = e.get("yf_ticker", tk)
                 currency = get_currency(e, ytk)
-                fx_r     = fx_on_date(currency, dt)
                 price_base = price / 100 if is_lse_pence(currency) else price
-                p_usd    = price_base * fx_r
 
                 holdings = ac_holdings[ac]
                 if action == "OPEN":
+                    if ac not in pre_cf_mv:
+                        pre_cf_mv[ac] = 0.0
                     holdings[tk] = {"qty": qty, "yf_ticker": ytk,
                                     "currency": currency, "avg_cost_base": price_base}
-                    
-                    ac_cost_basis_usd[ac] += price_base * fx_r * qty  # lock USD cost at open-date FX
-    
                 elif action == "ADD":
                     if tk in holdings:
-                        old = holdings[tk]
+                        old       = holdings[tk]
                         total_qty = old["qty"] + qty
                         avg_cost  = (old["avg_cost_base"] * old["qty"] + price_base * qty) / total_qty
-                        holdings[tk]["qty"] = total_qty
+                        holdings[tk]["qty"]          = total_qty
                         holdings[tk]["avg_cost_base"] = avg_cost
                     else:
                         holdings[tk] = {"qty": qty, "yf_ticker": ytk,
                                         "currency": currency, "avg_cost_base": price_base}
-                    ac_cost_basis_usd[ac] += price_base * fx_r * qty  
-
                 elif action == "REDUCE":
                     if tk in holdings:
-                        avg_cost_base = holdings[tk]["avg_cost_base"]
                         reduce_qty = min(qty, holdings[tk]["qty"])
-                        ac_sale_proceeds_usd[ac] += price_base * fx_r * reduce_qty
-                        ac_closed_cost_usd[ac]   += avg_cost_base * fx_r * reduce_qty  # ← ADD THIS LINE
                         holdings[tk]["qty"] -= reduce_qty
                         if holdings[tk]["qty"] <= 0:
                             del holdings[tk]
-                        
-                            
                 elif action == "CLOSE":
-                    if tk in holdings:
-                        close_qty = holdings[tk]["qty"]
-                        ac_sale_proceeds_usd[ac] += price_base * fx_r * close_qty
-                        ac_closed_cost_usd[ac]   += holdings[tk]["avg_cost_base"] * fx_r * close_qty  # ← ADD THIS LINE
-                        holdings.pop(tk, None)
-                       
+                    holdings.pop(tk, None)
 
-            is_inception_day = (ds == inception.strftime("%Y-%m-%d"))
+            # Step 3 — compute post-cashflow MV and compound the TWR factor
+            all_active = set(ac_holdings.keys()) | set(pre_cf_mv.keys())
+            for ac in all_active:
+                holdings  = ac_holdings.get(ac, {})
+                mv_post   = _mv_for_ac(holdings, dt) if holdings else 0.0
+                mv_before = pre_cf_mv.get(ac, 0.0)
 
-            for ac, holdings in ac_holdings.items():
-                if not holdings:
-                    continue
-                
-                total_cost_basis = ac_cost_basis_usd[ac]
-                if total_cost_basis <= 0:
-                    continue
+                if ac not in ac_first_day:
+                    # Very first day this AC exists — anchor to 0%
+                    ac_twr_factor[ac] = 1.0
+                    ac_first_day.add(ac)
+                    growth_pct = 0.0
+                elif mv_before > 0 and holdings:
+                    sub_r = (mv_post - mv_before) / mv_before
+                    ac_twr_factor[ac] *= (1.0 + sub_r)
+                    growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
+                else:
+                    growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
 
-                if is_inception_day:
-                    ac_series[ac].append({"date": ds, "growth_pct": 0.0})
-                    continue
+                ac_mv_prev[ac] = mv_post
 
-                mv = 0.0
-                cost_at_today_fx = 0.0
-                for tk, h in holdings.items():
-                    ytk      = h["yf_ticker"]
-                    currency = h.get("currency", "USD")
-                    fx_r     = fx_on_date(currency, dt)
-                    try:
-                        if ytk in prices.columns:
-                            p_raw  = float(prices.loc[:dt, ytk].iloc[-1])
-                            p_base = normalize_gbx_price(p_raw, h["avg_cost_base"]) if is_lse_pence(currency) else p_raw
-                            mv += p_base * fx_r * h["qty"]
-                        else:
-                            mv += h["avg_cost_base"] * fx_r * h["qty"]
-                    except:
-                        mv += h["avg_cost_base"] * fx_r * h["qty"]
-                    cost_at_today_fx += h["avg_cost_base"] * fx_r * h["qty"]
-
-                closed_realised_pnl = ac_sale_proceeds_usd[ac] - ac_closed_cost_usd[ac]
-                total_denominator   = cost_at_today_fx + ac_closed_cost_usd[ac]
-
-                if total_denominator <= 0:
-                    continue
-
-                growth_pct = round(
-                    (mv - cost_at_today_fx + closed_realised_pnl) / total_denominator * 100, 4
-                )
-                
-                ac_series[ac].append({"date": ds, "growth_pct": growth_pct})
+                if holdings or growth_pct != 0.0:
+                    ac_series[ac].append({"date": ds, "growth_pct": growth_pct})
 
         inception_str = inception.strftime("%Y-%m-%d")
         all_bdays = [d.strftime("%Y-%m-%d") for d in date_range]
