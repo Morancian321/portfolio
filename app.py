@@ -1007,11 +1007,10 @@ def asset_class_performance():
                 holdings  = ac_holdings.get(ac, {})
                 mv_post   = _mv_for_ac(holdings, dt) if holdings else 0.0
                 mv_before = pre_cf_mv.get(ac, 0.0)
-                cf = cf_net_by_ac.get(ac, 0.0)
+                cf        = cf_net_by_ac.get(ac, 0.0)
 
                 if mv_before is None:
-                    ac_twr_factor[ac] = 1.0
-                    growth_pct = 0.0
+                    growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
                 elif mv_before > 0:
                     sub_r = (mv_post - mv_before - cf) / mv_before
                     ac_twr_factor[ac] *= (1.0 + sub_r)
@@ -1019,10 +1018,50 @@ def asset_class_performance():
                 else:
                     growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
 
-                ac_mv_prev[ac] = mv_post if holdings else 0.0
+                # Bug A fix: on OPEN day, anchor to cost basis not market close
+                if holdings:
+                    is_fresh_open = (pre_cf_mv.get(ac, 0.0) == 0.0 and cf > 0)
+                    if is_fresh_open:
+                        ac_mv_prev[ac] = sum(
+                            h["avg_cost_base"] * fx_on_date(h["currency"], dt) * h["qty"]
+                            for h in holdings.values()
+                        )
+                    else:
+                        ac_mv_prev[ac] = mv_post
+                else:
+                    ac_mv_prev[ac] = 0.0  # was None — Bug B/2 fix
 
                 if holdings or growth_pct != 0.0:
                     ac_series[ac].append({"date": ds, "growth_pct": growth_pct})
+
+        # Bug B fix: inject today's live price as final data point
+        today_str = today.strftime("%Y-%m-%d")
+        for ac, holdings in ac_holdings.items():
+            if not holdings:
+                continue
+            live_mv = 0.0
+            for tk, h in holdings.items():
+                ytk      = h["yf_ticker"]
+                currency = h.get("currency", "USD")
+                fx_r     = fx_rates.get(fx_key(currency), 1.0)
+                lp       = get_live_price(ytk, manual_map)
+                if lp is None:
+                    lp = h["avg_cost_base"]
+                if is_lse_pence(currency):
+                    lp = normalize_gbx_price(lp, h["avg_cost_base"])
+                live_mv += lp * fx_r * h["qty"]
+
+            mv_before = ac_mv_prev.get(ac, 0.0)
+            if mv_before and mv_before > 0:
+                sub_r = (live_mv - mv_before) / mv_before
+                ac_twr_factor[ac] *= (1.0 + sub_r)
+
+            growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
+
+            if ac_series[ac] and ac_series[ac][-1]["date"] == today_str:
+                ac_series[ac][-1]["growth_pct"] = growth_pct  # overwrite if already there
+            else:
+                ac_series[ac].append({"date": today_str, "growth_pct": growth_pct})
 
         inception_str = inception.strftime("%Y-%m-%d")
         all_bdays = [d.strftime("%Y-%m-%d") for d in date_range]
