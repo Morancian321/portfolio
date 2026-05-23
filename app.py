@@ -1030,34 +1030,7 @@ def asset_class_performance():
                 if holdings or growth_pct != 0.0:
                     ac_series[ac].append({"date": ds, "growth_pct": growth_pct})
 
-        # Bug B fix: inject today's live price as final data point
         today_str = today.strftime("%Y-%m-%d")
-        for ac, holdings in ac_holdings.items():
-            if not holdings:
-                continue
-            live_mv = 0.0
-            for tk, h in holdings.items():
-                ytk      = h["yf_ticker"]
-                currency = h.get("currency", "USD")
-                fx_r     = fx_rates.get(fx_key(currency), 1.0)
-                lp       = get_live_price(ytk, manual_map)
-                if lp is None:
-                    lp = h["avg_cost_base"]
-                if is_lse_pence(currency):
-                    lp = normalize_gbx_price(lp, h["avg_cost_base"])
-                live_mv += lp * fx_r * h["qty"]
-
-            mv_before = ac_mv_prev.get(ac, 0.0)
-            if mv_before and mv_before > 0:
-                sub_r = (live_mv - mv_before) / mv_before
-                ac_twr_factor[ac] *= (1.0 + sub_r)
-
-            growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
-
-            if ac_series[ac] and ac_series[ac][-1]["date"] == today_str:
-                ac_series[ac][-1]["growth_pct"] = growth_pct  # overwrite if already there
-            else:
-                ac_series[ac].append({"date": today_str, "growth_pct": growth_pct})
 
         inception_str = inception.strftime("%Y-%m-%d")
         all_bdays = [d.strftime("%Y-%m-%d") for d in date_range]
