@@ -916,6 +916,7 @@ def asset_class_performance():
        
         ac_cost_basis_usd = defaultdict(float)
         ac_sale_proceeds_usd = defaultdict(float)
+        ac_closed_cost_usd   = defaultdict(float)
         
         ac_holdings = defaultdict(dict)
         ticker_ac_map = {}
@@ -968,8 +969,8 @@ def asset_class_performance():
                     if tk in holdings:
                         avg_cost_base = holdings[tk]["avg_cost_base"]
                         reduce_qty = min(qty, holdings[tk]["qty"])
-                        ac_sale_proceeds_usd[ac] += price_base * fx_r * reduce_qty  # full proceeds
-
+                        ac_sale_proceeds_usd[ac] += price_base * fx_r * reduce_qty
+                        ac_closed_cost_usd[ac]   += avg_cost_base * fx_r * reduce_qty  # ← ADD THIS LINE
                         holdings[tk]["qty"] -= reduce_qty
                         if holdings[tk]["qty"] <= 0:
                             del holdings[tk]
@@ -978,7 +979,8 @@ def asset_class_performance():
                 elif action == "CLOSE":
                     if tk in holdings:
                         close_qty = holdings[tk]["qty"]
-                        ac_sale_proceeds_usd[ac] += price_base * fx_r * close_qty  # full proceeds
+                        ac_sale_proceeds_usd[ac] += price_base * fx_r * close_qty
+                        ac_closed_cost_usd[ac]   += holdings[tk]["avg_cost_base"] * fx_r * close_qty  # ← ADD THIS LINE
                         holdings.pop(tk, None)
                        
 
@@ -997,23 +999,30 @@ def asset_class_performance():
                     continue
 
                 mv = 0.0
+                cost_at_today_fx = 0.0
                 for tk, h in holdings.items():
                     ytk      = h["yf_ticker"]
                     currency = h.get("currency", "USD")
                     fx_r     = fx_on_date(currency, dt)
                     try:
                         if ytk in prices.columns:
-                            p_raw = float(prices.loc[:dt, ytk].iloc[-1])
+                            p_raw  = float(prices.loc[:dt, ytk].iloc[-1])
                             p_base = normalize_gbx_price(p_raw, h["avg_cost_base"]) if is_lse_pence(currency) else p_raw
                             mv += p_base * fx_r * h["qty"]
                         else:
-                            mv += h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
+                            mv += h["avg_cost_base"] * fx_r * h["qty"]
                     except:
-                        mv += h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
+                        mv += h["avg_cost_base"] * fx_r * h["qty"]
+                    cost_at_today_fx += h["avg_cost_base"] * fx_r * h["qty"]
 
+                closed_realised_pnl = ac_sale_proceeds_usd[ac] - ac_closed_cost_usd[ac]
+                total_denominator   = cost_at_today_fx + ac_closed_cost_usd[ac]
+
+                if total_denominator <= 0:
+                    continue
 
                 growth_pct = round(
-                    (mv + ac_sale_proceeds_usd[ac] - total_cost_basis) / total_cost_basis * 100, 4
+                    (mv - cost_at_today_fx + closed_realised_pnl) / total_denominator * 100, 4
                 )
                 
                 ac_series[ac].append({"date": ds, "growth_pct": growth_pct})
