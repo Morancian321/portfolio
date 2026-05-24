@@ -937,6 +937,7 @@ def asset_class_performance():
             for tk, h in holdings_dict.items():
                 ytk      = h["yf_ticker"]
                 currency = h.get("currency", "USD")
+                fx_r     = fx_on_date(currency, dt)
                 if ytk not in prices.columns:
                     mv += h["avg_cost_base"] * fx_r * h["qty"]
                     continue
@@ -977,7 +978,7 @@ def asset_class_performance():
                 if action == "OPEN":
                     holdings[tk]  = {"qty": qty, "yf_ticker": ytk,
                                      "currency": currency, "avg_cost_base": price_base}
-                    cf_net_by_ac[ac] += price_base * qty
+                    cf_net_by_ac[ac] += price_base * fx_on_date(currency, dt) * qty
                     
                 elif action == "ADD":
                     if tk in holdings:
@@ -989,7 +990,7 @@ def asset_class_performance():
                     else:
                         holdings[tk] = {"qty": qty, "yf_ticker": ytk,
                                         "currency": currency, "avg_cost_base": price_base}
-                    cf_net_by_ac[ac] += price_base * qty
+                    cf_net_by_ac[ac] += price_base * fx_on_date(currency, dt) * qty
                         
                 elif action == "REDUCE":
                     if tk in holdings:
@@ -997,11 +998,11 @@ def asset_class_performance():
                         holdings[tk]["qty"] -= reduce_qty
                         if holdings[tk]["qty"] <= 0:
                             del holdings[tk]
-                        cf_net_by_ac[ac] -= price_base * qty
+                        cf_net_by_ac[ac] -= price_base * fx_on_date(currency, dt) * qty
                         
                 elif action == "CLOSE":
                     holdings.pop(tk, None)
-                    cf_net_by_ac[ac] -= price_base * qty
+                    cf_net_by_ac[ac] -= price_base * fx_on_date(currency, dt) * qty
 
             # Step 3 — compute today's closing MV, compound TWR factor
             all_active = set(ac_holdings.keys()) | set(pre_cf_mv.keys())
@@ -1016,7 +1017,7 @@ def asset_class_performance():
                 if is_first_day:
                     # On open day: anchor prev MV to cost basis, do NOT compound TWR yet
                     cost_basis_mv = sum(
-                        h["avg_cost_base"] * h["qty"]
+                        h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
                         for h in holdings.values()
                     ) if holdings else 0.0
                     ac_mv_prev[ac] = cost_basis_mv
