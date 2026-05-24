@@ -1012,8 +1012,16 @@ def asset_class_performance():
                 mv_before = pre_cf_mv.get(ac, 0.0)
                 cf        = cf_net_by_ac.get(ac, 0.0)
 
-                if mv_before is None:
-                    growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
+                is_first_day = (mv_before == 0.0 and cf > 0)
+
+                if is_first_day:
+                    # On open day: anchor prev MV to cost basis, do NOT compound TWR yet
+                    cost_basis_mv = sum(
+                        h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
+                        for h in holdings.values()
+                    ) if holdings else 0.0
+                    ac_mv_prev[ac] = cost_basis_mv
+                    growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)  # stays 0.0 on open day
                 elif mv_before > 0:
                     denom = mv_before + cf
                     if denom > 0:
@@ -1022,22 +1030,10 @@ def asset_class_performance():
                         sub_r = (mv_post - mv_before - cf) / mv_before
                     ac_twr_factor[ac] *= (1.0 + sub_r)
                     growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
+                    ac_mv_prev[ac] = mv_post if holdings else 0.0
                 else:
                     growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
-
-                # Bug A fix: on OPEN day, anchor to cost basis not market close
-                if holdings:
-                    is_first_day = (pre_cf_mv.get(ac, 0.0) == 0.0)
-                    if is_first_day:
-                        cost_basis_mv = sum(
-                            h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
-                            for h in holdings.values()
-                        )
-                        ac_mv_prev[ac] = cost_basis_mv
-                    else:
-                        ac_mv_prev[ac] = mv_post
-                else:
-                    ac_mv_prev[ac] = 0.0
+                    ac_mv_prev[ac] = mv_post if holdings else 0.0
 
                 if holdings or growth_pct != 0.0:
                     ac_series[ac].append({"date": ds, "growth_pct": growth_pct})
