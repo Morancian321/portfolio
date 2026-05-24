@@ -361,7 +361,8 @@ def build_positions(trades, fx_rates, manual_map):
     return open_positions, closed_trades
 
 def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
-                    live_positions_mv=None, live_cash=None, income_records=None):
+                    live_positions_mv=None, live_cash=None, income_records=None,
+                    disp_currency="USD"):
 
     if nav_overrides is None:
         nav_overrides = {}
@@ -510,7 +511,15 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
                 except:
                     pass
 
-        nav_series.append({"date": ds, "value": round(port_val, 2)})
+        if disp_currency == "EUR":
+            hist_rate = fx_on_date("EUR", dt)
+            port_val_disp = port_val / hist_rate if hist_rate > 0 else port_val
+        elif disp_currency == "GBP":
+            hist_rate = fx_on_date("GBP", dt)
+            port_val_disp = port_val / hist_rate if hist_rate > 0 else port_val
+        else:
+            port_val_disp = port_val
+        nav_series.append({"date": ds, "value": round(port_val_disp, 2)})
 
         try:
             eq_p   = float(prices.loc[:dt, bench_eq_ticker].iloc[-1])   if bench_eq_ticker   in prices.columns else None
@@ -674,7 +683,6 @@ def portfolio():
         manual_map   = {r["ticker"]: r["manual_price"] for r in manual_rows if r.get("ticker")}
         nav_overrides = parse_nav_overrides(nav_overrides_rows)
 
-        # FIX 13: Parse income records and compute totals.
         income_records   = parse_income(income_rows, fx_rates)
         total_income_usd = sum(r["cash_usd"] for r in income_records)
         dividends_usd    = sum(r["cash_usd"] for r in income_records if r["income_type"] == "Dividend")
@@ -730,16 +738,29 @@ def portfolio():
         cce_mv        = sum(p["mv_usd"] for p in cce_positions)
         cce_total     = round(cce_mv + cash, 2)
 
-       
+        # ── MOVED UP: resolve display currency early so build_nav_curve and
+        #    calc_metrics both receive values in the correct currency scale ──
+        disp = cfg.get("display_currency", "USD")
+
+        # FIX 3: starting_capital in display currency, computed before build_nav_curve
+        if disp != "USD" and disp in fx_rates:
+            starting_capital_disp = round(cfg["starting_capital"] / fx_rates[disp], 2)
+        else:
+            starting_capital_disp = cfg["starting_capital"]
+
+        # FIX 4: pass disp_currency so NAV curve is converted historically inside the loop
         nav_series, bench_series = build_nav_curve(
             trades, fx_rates, cfg, cfg["benchmark"],
             nav_overrides=nav_overrides,
             live_positions_mv=total_mv,
             live_cash=cash,
             income_records=income_records,
+            disp_currency=disp,
         )
+
+        # FIX 5: use starting_capital_disp so total_return_pct is EUR-consistent
         metrics = calc_metrics(
-            nav_series, cfg["starting_capital"],
+            nav_series, starting_capital_disp,
             rf_annual=rf_rate,
             closed_trades=closed,
             income_usd=total_income_usd,
@@ -755,21 +776,18 @@ def portfolio():
         base_ccy = cfg.get("base_currency", "USD")
         fx_exposure = {}
         for ccy in ["USD", "GBP", "EUR"]:
-            # GBX maps to GBP bucket via fx_key()
             ccy_mv = sum(p["mv_usd"] for p in open_pos if fx_key(p["currency"]) == ccy)
             if ccy == base_ccy:
                 ccy_mv += cash
             fx_exposure[ccy + "_pct"] = round(ccy_mv / total_val * 100, 2) if total_val else 0
 
-       
-        disp = cfg.get("display_currency", "USD")
         if disp != "USD" and disp in fx_rates:
             usd_to_disp = 1.0 / fx_rates[disp]
 
             def conv(v):
                 return round(v * usd_to_disp, 2) if isinstance(v, (int, float)) else v
 
-            starting_capital_disp = conv(cfg["starting_capital"])
+            # starting_capital_disp already computed above — do NOT recompute here
             current_value_disp    = conv(total_val)
             total_pnl_disp        = conv(total_val - cfg["starting_capital"])
             cash_disp             = conv(cash)
@@ -790,14 +808,15 @@ def portfolio():
                 for field in ["realised_pnl_usd", "cost_usd_sold"]:
                     t[field] = conv(t[field])
 
-            nav_series   = [{"date": x["date"], "value": conv(x["value"])} for x in nav_series]
+            # FIX 6: nav_series already in display currency from build_nav_curve — DO NOT convert again
+            # nav_series line removed here intentionally
 
             for r in income_records:
                 r["cash_usd"] = conv(r["cash_usd"])
 
         else:
             usd_to_disp           = 1.0
-            starting_capital_disp = cfg["starting_capital"]
+            # starting_capital_disp already computed above
             current_value_disp    = round(total_val, 2)
             total_pnl_disp        = round(total_val - cfg["starting_capital"], 2)
             cash_disp             = round(cash, 2)
@@ -830,7 +849,6 @@ def portfolio():
             "position_sizing_policy":   SIZING_POLICY,
             "display_currency":         disp,
             "usd_to_display":           round(usd_to_disp, 6),
-            # FIX 13: Income fields for frontend income box.
             "income_records":           income_records,
             "total_income_usd":         total_income_disp,
             "dividends_usd":            dividends_disp,
