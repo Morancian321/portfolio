@@ -428,6 +428,34 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
     for t in trades:
         events_by_date[t["date"]].append(t)
 
+    income_by_date_total = defaultdict(float)
+    for r in income_records:
+        if r.get("date"):
+            income_by_date_total[r["date"]] += r["cash_usd"]
+
+    # Build a running cash balance identical to build_nav_curve
+    # key: date_str -> float (USD)
+    hist_cash = {}
+    _cash_running = cfg["starting_capital"]
+    for dt in date_range:
+        ds = dt.strftime("%Y-%m-%d")
+        for e in sorted(events_by_date.get(ds, []),
+                        key=lambda x: ACTION_ORDER.get(x.get("action", "").upper(), 99)):
+            qty      = float(e.get("quantity", 0))
+            price    = float(e.get("price", 0))
+            action   = e.get("action", "").upper()
+            ytk      = e.get("yf_ticker", e["ticker"])
+            currency = get_currency(e, ytk)
+            fx_r     = fx_on_date(currency, dt)
+            price_base = price / 100 if is_lse_pence(currency) else price
+            p_usd    = price_base * fx_r
+            if action in ("OPEN", "ADD"):
+                _cash_running -= p_usd * qty
+            elif action in ("REDUCE", "CLOSE"):
+                _cash_running += p_usd * qty
+        _cash_running += income_by_date_total.get(ds, 0.0)
+        hist_cash[ds] = max(_cash_running, 0.0)
+                        
     income_by_date = defaultdict(float)
     for r in income_records:
         if r.get("date"):
@@ -937,8 +965,8 @@ def asset_class_performance():
        
         ac_series  = defaultdict(list)
 
-        def _mv_for_ac(holdings_dict, dt):
-            mv = 0.0
+        def _mv_for_ac(holdings_dict, dt, extra_cash=0.0):
+            mv = extra_cash
             for tk, h in holdings_dict.items():
                 ytk      = h["yf_ticker"]
                 currency = h.get("currency", "USD")
@@ -1024,7 +1052,10 @@ def asset_class_performance():
                 if dt == last_bday and ac in live_mv_by_ac:
                     mv_post = live_mv_by_ac[ac]
                 else:
-                    mv_post = _mv_for_ac(holdings, dt) if holdings else 0.0
+                    extra = hist_cash.get(ds, 0.0) if ac == "C&CE" else 0.0
+                    mv_post = _mv_for_ac(holdings, dt, extra_cash=extra) if (holdings or extra > 0) else 0.0
+                else 0.0
+                
                 mv_before = pre_cf_mv.get(ac, 0.0)
                 cf        = cf_net_by_ac.get(ac, 0.0)
 
@@ -1036,6 +1067,9 @@ def asset_class_performance():
                         h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
                         for h in holdings.values()
                     ) if holdings else 0.0
+                    if ac == "C&CE":
+                        cost_basis_mv += hist_cash.get(ds, 0.0)
+                
                     ac_mv_prev[ac] = cost_basis_mv
                     growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)  # stays 0.0 on open day
                 elif mv_before > 0:
