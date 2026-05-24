@@ -1054,7 +1054,6 @@ def asset_class_performance():
                 else:
                     extra = hist_cash.get(ds, 0.0) if ac == "C&CE" else 0.0
                     mv_post = _mv_for_ac(holdings, dt, extra_cash=extra) if (holdings or extra > 0) else 0.0
-                else 0.0
                 
                 mv_before = pre_cf_mv.get(ac, 0.0)
                 cf        = cf_net_by_ac.get(ac, 0.0)
