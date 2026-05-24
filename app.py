@@ -955,10 +955,11 @@ def asset_class_performance():
         ac_mv_prev    = {}
 
         ticker_ac_map = {}
-        for t in trades:
+        for t in sorted(trades, key=lambda x: x["date"]):
             tk = t["ticker"]
-            if tk not in ticker_ac_map and t.get("asset_class"):
-                ticker_ac_map[tk] = t["asset_class"]
+            ac = t.get("asset_class", "")
+            if ac:
+                ticker_ac_map[tk] = ac
 
         # FIX 18b: Build {date_str: {ac: income_usd}} keyed by ac.
         # Uses zip(income_rows, income_records) — O(n), no index lookup.
@@ -1030,14 +1031,17 @@ def asset_class_performance():
         live_mv_by_ac = defaultdict(float)
 
         for p in open_pos_live:
-            ac_p     = p["asset_class"]
-            currency = p.get("currency", "USD")
-            live_fx  = fx_rates.get(fx_key(currency), 1.0)
-            hist_fx  = fx_on_date(currency, last_bday) if last_bday is not None else live_fx
-            # Rebase: strip live FX, apply historical FX from price series so it's
-            # consistent with ac_mv_prev which was built using fx_on_date throughout the loop
-            rebased_mv = (p["mv_usd"] / live_fx * hist_fx) if live_fx > 0 else p["mv_usd"]
-            live_mv_by_ac[ac_p] += rebased_mv
+            ac_p       = p["asset_class"]
+            currency   = p.get("currency", "USD")
+            hist_fx    = fx_on_date(currency, last_bday) if last_bday is not None else fx_rates.get(fx_key(currency), 1.0)
+            live_price = p.get("live_price") or p.get("avg_price", 0)
+            qty        = p.get("quantity", 0)
+            # Recompute MV in USD using the same historical FX the loop has been using all along
+            if is_lse_pence(currency):
+                price_base = live_price   # already divided by 100 in build_positions
+            else:
+                price_base = live_price
+            live_mv_by_ac[ac_p] += price_base * hist_fx * qty
 
        
         for dt in date_range:
@@ -1090,10 +1094,8 @@ def asset_class_performance():
                     close_qty = holdings.get(tk, {}).get("qty", qty)
                     holdings.pop(tk, None)
                     cf_net_by_ac[ac] -= price_base * fx_on_date(currency, dt) * close_qty
-                    # If all positions in this class are now closed, stamp ac_mv_prev to 0.0
-                    # so is_first_day doesn't misfire if this class is re-opened later
                     if not holdings:
-                        ac_mv_prev[ac] = 0.0
+                        ac_mv_prev[ac] = -1.0
 
 
             # Step 3 — compute today's closing MV, compound TWR factor
@@ -1104,12 +1106,12 @@ def asset_class_performance():
                     mv_post = live_mv_by_ac[ac]
                 else:
                     mv_post = _mv_for_ac(holdings, dt) if holdings else 0.0
-
+                mv_post += income_by_ac_date.get(ds, {}).get(ac, 0.0)
                 
-                mv_before = pre_cf_mv.get(ac, 0.0)
+                mv_before = max(pre_cf_mv.get(ac, 0.0), 0.0)
                 cf        = cf_net_by_ac.get(ac, 0.0)
 
-                is_first_day = (ac not in ac_mv_prev and cf > 0)
+                is_first_day = (ac not in ac_mv_prev or ac_mv_prev.get(ac) == -1.0) and cf > 0
 
                 if is_first_day:
                     # On open day: anchor prev MV to cost basis, do NOT compound TWR yet
