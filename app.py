@@ -20,7 +20,7 @@ SIZING_POLICY = {
     "Opportunistic": {"tickers": ["EEM", "LUTI", "WSML"],                   "min_pct": 2,  "max_pct": 7},
     "Speculative":   {"tickers": ["BTCUSD", "BTC-USD", "COIN"],     "min_pct": 0,  "max_pct": 2},
 }
-
+ACTION_ORDER = {"CLOSE": 0, "REDUCE": 1, "ADD": 2, "OPEN": 3}
 
 def get_currency(trade_row_or_ticker, yf_ticker=None):
     # Called with (trade_row dict, yf_ticker) — new path
@@ -444,7 +444,6 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
     for dt in date_range:
         ds = dt.strftime("%Y-%m-%d")
 
-        ACTION_ORDER = {"CLOSE": 0, "REDUCE": 1, "ADD": 2, "OPEN": 3}
         for e in sorted(events_by_date.get(ds, []), key=lambda x: 
         ACTION_ORDER.get(x.get("action", "").upper(), 99)):
             tk       = e["ticker"]
@@ -870,8 +869,7 @@ def asset_class_performance():
 
         inception = datetime.strptime(cfg["inception_date"], "%Y-%m-%d")
         today     = datetime.today()
-        disp      = cfg.get("display_currency", "USD")
-        usd_to_disp = (1.0 / fx_rates[disp]) if (disp != "USD" and disp in fx_rates) else 1.0
+        income_records = parse_income(income_rows, fx_rates)
 
         # Build ticker → yf_ticker map and collect all tickers needed
         ticker_map = {}
@@ -921,7 +919,6 @@ def asset_class_performance():
         ac_holdings   = defaultdict(dict)
         ac_twr_factor = defaultdict(lambda: 1.0)
         ac_mv_prev    = {}
-        ac_first_day  = set()
 
         ticker_ac_map = {}
         for t in trades:
@@ -929,7 +926,19 @@ def asset_class_performance():
             if tk not in ticker_ac_map and t.get("asset_class"):
                 ticker_ac_map[tk] = t["asset_class"]
 
+        # FIX 18b: Build {date_str: {ac: income_usd}} keyed by ac.
+        # Uses zip(income_rows, income_records) — O(n), no index lookup.
+        from collections import defaultdict as _dd
+        income_by_ac_date = _dd(lambda: _dd(float))
+        for raw_row, parsed_row in zip(income_rows, income_records):
+            r_date = parsed_row.get("date", "")
+            r_tk   = str(raw_row.get("ticker", "")).strip()
+            r_ac   = ticker_ac_map.get(r_tk, "Income")
+            if r_date:
+                income_by_ac_date[r_date][r_ac] += parsed_row["cash_usd"]
+
         date_range = pd.bdate_range(start=inception, end=today)
+       
         ac_series  = defaultdict(list)
 
         def _mv_for_ac(holdings_dict, dt):
@@ -961,7 +970,6 @@ def asset_class_performance():
             cf_net_by_ac = defaultdict(float)  
 
             # Step 2 — apply trades
-            ACTION_ORDER = {"CLOSE": 0, "REDUCE": 1, "ADD": 2, "OPEN": 3}
             for e in sorted(events_by_date.get(ds, []),
                             key=lambda x: ACTION_ORDER.get(x.get("action", "").upper(), 99)):
                 tk         = e["ticker"]
@@ -998,11 +1006,14 @@ def asset_class_performance():
                         holdings[tk]["qty"] -= reduce_qty
                         if holdings[tk]["qty"] <= 0:
                             del holdings[tk]
-                        cf_net_by_ac[ac] -= price_base * fx_on_date(currency, dt) * qty
+                        cf_net_by_ac[ac] -= price_base * fx_on_date(currency, dt) * reduce_qty
                         
                 elif action == "CLOSE":
                     holdings.pop(tk, None)
                     cf_net_by_ac[ac] -= price_base * fx_on_date(currency, dt) * qty
+
+            for income_ac, income_amt in income_by_ac_date.get(ds, {}).items():
+                cf_net_by_ac[income_ac] -= income_amt
 
             # Step 3 — compute today's closing MV, compound TWR factor
             all_active = set(ac_holdings.keys()) | set(pre_cf_mv.keys())
