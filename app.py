@@ -961,6 +961,13 @@ def asset_class_performance():
                 except:
                     mv += h["avg_cost_base"] * fx_r * h["qty"]
             return mv
+ 
+        # Build live MV per asset class using the same positions as /api/portfolio.
+        open_pos_live, _ = build_positions(trades, fx_rates, manual_map)
+        live_mv_by_ac = defaultdict(float)
+        for p in open_pos_live:
+            live_mv_by_ac[p["asset_class"]] += p["mv_usd"]
+        last_bday = date_range[-1] if len(date_range) > 0 else None
 
         for dt in date_range:
             ds = dt.strftime("%Y-%m-%d")
@@ -1009,17 +1016,19 @@ def asset_class_performance():
                         cf_net_by_ac[ac] -= price_base * fx_on_date(currency, dt) * reduce_qty
                         
                 elif action == "CLOSE":
+                    close_qty = holdings.get(tk, {}).get("qty", qty)
                     holdings.pop(tk, None)
-                    cf_net_by_ac[ac] -= price_base * fx_on_date(currency, dt) * qty
+                    cf_net_by_ac[ac] -= price_base * fx_on_date(currency, dt) * close_qty
 
-            for income_ac, income_amt in income_by_ac_date.get(ds, {}).items():
-                cf_net_by_ac[income_ac] -= income_amt
 
             # Step 3 — compute today's closing MV, compound TWR factor
             all_active = set(ac_holdings.keys()) | set(pre_cf_mv.keys())
             for ac in all_active:
                 holdings  = ac_holdings.get(ac, {})
-                mv_post   = _mv_for_ac(holdings, dt) if holdings else 0.0
+                if dt == last_bday and ac in live_mv_by_ac:
+                    mv_post = live_mv_by_ac[ac]
+                else:
+                    mv_post = _mv_for_ac(holdings, dt) if holdings else 0.0
                 mv_before = pre_cf_mv.get(ac, 0.0)
                 cf        = cf_net_by_ac.get(ac, 0.0)
 
