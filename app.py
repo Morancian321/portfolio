@@ -795,10 +795,6 @@ def portfolio():
             for r in income_records:
                 r["cash_usd"] = conv(r["cash_usd"])
 
-            for p in cce_positions:
-                for field in ["mv_usd", "cost_usd", "unreal_pnl"]:
-                    p[field] = conv(p[field])
-
         else:
             usd_to_disp           = 1.0
             starting_capital_disp = cfg["starting_capital"]
