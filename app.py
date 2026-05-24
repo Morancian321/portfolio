@@ -961,7 +961,7 @@ def asset_class_performance():
                 elif action in ("REDUCE", "CLOSE"):
                     _cash_running += p_usd * qty
             _cash_running += income_by_date_total.get(ds, 0.0)
-           hist_cash[ds] = max(_cash_running, 0.0)
+            hist_cash[ds] = max(_cash_running, 0.0)
         
         ac_series  = defaultdict(list)
 
