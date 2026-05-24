@@ -988,10 +988,22 @@ def asset_class_performance():
  
         # Build live MV per asset class using the same positions as /api/portfolio.
         open_pos_live, _ = build_positions(trades, fx_rates, manual_map)
-        live_mv_by_ac = defaultdict(float)
-        for p in open_pos_live:
-            live_mv_by_ac[p["asset_class"]] += p["mv_usd"]
         last_bday = date_range[-1] if len(date_range) > 0 else None
+        live_mv_by_ac = defaultdict(float)
+
+        for p in open_pos_live:
+            ac_p     = p["asset_class"]
+            currency = p.get("currency", "USD")
+            live_fx  = fx_rates.get(fx_key(currency), 1.0)
+            hist_fx  = fx_on_date(currency, last_bday) if last_bday is not None else live_fx
+            # Rebase: strip live FX, apply historical FX from price series so it's
+            # consistent with ac_mv_prev which was built using fx_on_date throughout the loop
+            rebased_mv = (p["mv_usd"] / live_fx * hist_fx) if live_fx > 0 else p["mv_usd"]
+            live_mv_by_ac[ac_p] += rebased_mv
+
+        # Add uninvested cash to C&CE on the last business day (consistent with hist_cash)
+        if last_bday is not None:
+            live_mv_by_ac["C&CE"] += hist_cash.get(last_bday.strftime("%Y-%m-%d"), 0.0)
 
         for dt in date_range:
             ds = dt.strftime("%Y-%m-%d")
@@ -1043,6 +1055,10 @@ def asset_class_performance():
                     close_qty = holdings.get(tk, {}).get("qty", qty)
                     holdings.pop(tk, None)
                     cf_net_by_ac[ac] -= price_base * fx_on_date(currency, dt) * close_qty
+                    # If all positions in this class are now closed, stamp ac_mv_prev to 0.0
+                    # so is_first_day doesn't misfire if this class is re-opened later
+                    if not holdings:
+                        ac_mv_prev[ac] = 0.0
 
 
             # Step 3 — compute today's closing MV, compound TWR factor
@@ -1058,7 +1074,7 @@ def asset_class_performance():
                 mv_before = pre_cf_mv.get(ac, 0.0)
                 cf        = cf_net_by_ac.get(ac, 0.0)
 
-                is_first_day = (mv_before == 0.0 and cf > 0)
+                is_first_day = (ac not in ac_mv_prev and cf > 0)
 
                 if is_first_day:
                     # On open day: anchor prev MV to cost basis, do NOT compound TWR yet
