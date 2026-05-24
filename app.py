@@ -492,8 +492,29 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
                 currency = h.get("currency", get_currency({}, h["yf_ticker"]))
                 fx_r     = fx_on_date(currency, dt)
                 port_val += h["avg_cost_base"] * fx_r * h["qty"]
+            # inception day: use historical rate (same as else block)
+            if disp_currency == "EUR":
+                hist_rate = fx_on_date("EUR", dt)
+                port_val_disp = port_val / hist_rate if hist_rate > 0 else port_val
+            elif disp_currency == "GBP":
+                hist_rate = fx_on_date("GBP", dt)
+                port_val_disp = port_val / hist_rate if hist_rate > 0 else port_val
+            else:
+                port_val_disp = port_val
+            nav_series.append({"date": ds, "value": round(port_val_disp, 2)})
+
         elif is_final_date and live_positions_mv is not None and live_cash is not None:
             port_val = live_cash + live_positions_mv
+            if disp_currency == "EUR":
+                live_rate = fx_rates.get("EUR", 1.0)
+                port_val_disp = port_val / live_rate if live_rate > 0 else port_val
+            elif disp_currency == "GBP":
+                live_rate = fx_rates.get("GBP", 1.0)
+                port_val_disp = port_val / live_rate if live_rate > 0 else port_val
+            else:
+                port_val_disp = port_val
+            nav_series.append({"date": ds, "value": round(port_val_disp, 2)})
+
         else:
             port_val = cash
             for tk, h in holdings.items():
@@ -510,16 +531,15 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
                         port_val += h["qty"]
                 except:
                     pass
-
-        if disp_currency == "EUR":
-            hist_rate = fx_on_date("EUR", dt)
-            port_val_disp = port_val / hist_rate if hist_rate > 0 else port_val
-        elif disp_currency == "GBP":
-            hist_rate = fx_on_date("GBP", dt)
-            port_val_disp = port_val / hist_rate if hist_rate > 0 else port_val
-        else:
-            port_val_disp = port_val
-        nav_series.append({"date": ds, "value": round(port_val_disp, 2)})
+            if disp_currency == "EUR":
+                hist_rate = fx_on_date("EUR", dt)
+                port_val_disp = port_val / hist_rate if hist_rate > 0 else port_val
+            elif disp_currency == "GBP":
+                hist_rate = fx_on_date("GBP", dt)
+                port_val_disp = port_val / hist_rate if hist_rate > 0 else port_val
+            else:
+                port_val_disp = port_val
+            nav_series.append({"date": ds, "value": round(port_val_disp, 2)})
 
         try:
             eq_p   = float(prices.loc[:dt, bench_eq_ticker].iloc[-1])   if bench_eq_ticker   in prices.columns else None
