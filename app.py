@@ -1001,10 +1001,7 @@ def asset_class_performance():
             rebased_mv = (p["mv_usd"] / live_fx * hist_fx) if live_fx > 0 else p["mv_usd"]
             live_mv_by_ac[ac_p] += rebased_mv
 
-        # Add uninvested cash to C&CE on the last business day (consistent with hist_cash)
-        if last_bday is not None:
-            live_mv_by_ac["C&CE"] += hist_cash.get(last_bday.strftime("%Y-%m-%d"), 0.0)
-
+       
         for dt in date_range:
             ds = dt.strftime("%Y-%m-%d")
 
@@ -1068,8 +1065,8 @@ def asset_class_performance():
                 if dt == last_bday and ac in live_mv_by_ac:
                     mv_post = live_mv_by_ac[ac]
                 else:
-                    extra = hist_cash.get(ds, 0.0) if ac == "C&CE" else 0.0
-                    mv_post = _mv_for_ac(holdings, dt, extra_cash=extra) if (holdings or extra > 0) else 0.0
+                    mv_post = _mv_for_ac(holdings, dt) if holdings else 0.0
+
                 
                 mv_before = pre_cf_mv.get(ac, 0.0)
                 cf        = cf_net_by_ac.get(ac, 0.0)
@@ -1082,8 +1079,6 @@ def asset_class_performance():
                         h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
                         for h in holdings.values()
                     ) if holdings else 0.0
-                    if ac == "C&CE":
-                        cost_basis_mv += hist_cash.get(ds, 0.0)
                 
                     ac_mv_prev[ac] = cost_basis_mv
                     growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)  # stays 0.0 on open day
