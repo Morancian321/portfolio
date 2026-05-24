@@ -427,34 +427,6 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
     events_by_date = defaultdict(list)
     for t in trades:
         events_by_date[t["date"]].append(t)
-
-    income_by_date_total = defaultdict(float)
-    for r in income_records:
-        if r.get("date"):
-            income_by_date_total[r["date"]] += r["cash_usd"]
-
-    # Build a running cash balance identical to build_nav_curve
-    # key: date_str -> float (USD)
-    hist_cash = {}
-    _cash_running = cfg["starting_capital"]
-    for dt in date_range:
-        ds = dt.strftime("%Y-%m-%d")
-        for e in sorted(events_by_date.get(ds, []),
-                        key=lambda x: ACTION_ORDER.get(x.get("action", "").upper(), 99)):
-            qty      = float(e.get("quantity", 0))
-            price    = float(e.get("price", 0))
-            action   = e.get("action", "").upper()
-            ytk      = e.get("yf_ticker", e["ticker"])
-            currency = get_currency(e, ytk)
-            fx_r     = fx_on_date(currency, dt)
-            price_base = price / 100 if is_lse_pence(currency) else price
-            p_usd    = price_base * fx_r
-            if action in ("OPEN", "ADD"):
-                _cash_running -= p_usd * qty
-            elif action in ("REDUCE", "CLOSE"):
-                _cash_running += p_usd * qty
-        _cash_running += income_by_date_total.get(ds, 0.0)
-        hist_cash[ds] = max(_cash_running, 0.0)
                         
     income_by_date = defaultdict(float)
     for r in income_records:
@@ -962,7 +934,35 @@ def asset_class_performance():
                 income_by_ac_date[r_date][r_ac] += parsed_row["cash_usd"]
 
         date_range = pd.bdate_range(start=inception, end=today)
-       
+
+        income_by_date_total = defaultdict(float)
+        for r in income_records:
+            if r.get("date"):
+                income_by_date_total[r["date"]] += r["cash_usd"]
+
+        # Build a running cash balance identical to build_nav_curve
+        # key: date_str -> float (USD)
+        hist_cash = {}
+        _cash_running = cfg["starting_capital"]
+        for dt in date_range:
+            ds = dt.strftime("%Y-%m-%d")
+            for e in sorted(events_by_date.get(ds, []),
+                            key=lambda x: ACTION_ORDER.get(x.get("action", "").upper(), 99)):
+                qty      = float(e.get("quantity", 0))
+                price    = float(e.get("price", 0))
+                action   = e.get("action", "").upper()
+                ytk      = e.get("yf_ticker", e["ticker"])
+                currency = get_currency(e, ytk)
+                fx_r     = fx_on_date(currency, dt)
+                price_base = price / 100 if is_lse_pence(currency) else price
+                p_usd    = price_base * fx_r
+                if action in ("OPEN", "ADD"):
+                    _cash_running -= p_usd * qty
+                elif action in ("REDUCE", "CLOSE"):
+                    _cash_running += p_usd * qty
+            _cash_running += income_by_date_total.get(ds, 0.0)
+           hist_cash[ds] = max(_cash_running, 0.0)
+        
         ac_series  = defaultdict(list)
 
         def _mv_for_ac(holdings_dict, dt, extra_cash=0.0):
