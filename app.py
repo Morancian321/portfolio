@@ -1023,7 +1023,8 @@ def asset_class_performance():
                     mv += p_base * fx_r * h["qty"]
                 except:
                     mv += h["avg_cost_base"] * fx_r * h["qty"]
-            return mv
+            eur_rate = fx_on_date("EUR", dt)
+            return mv / eur_rate if eur_rate > 0 else mv
  
         # Build live MV per asset class using the same positions as /api/portfolio.
         open_pos_live, _ = build_positions(trades, fx_rates, manual_map)
@@ -1042,6 +1043,9 @@ def asset_class_performance():
             else:
                 price_base = live_price
             live_mv_by_ac[ac_p] += price_base * hist_fx * qty
+            eur_rate = fx_on_date("EUR", last_bday) if last_bday else fx_rates.get("EUR", 1.0)
+            for ac_p in live_mv_by_ac:
+                live_mv_by_ac[ac_p] = live_mv_by_ac[ac_p] / eur_rate if eur_rate > 0 else live_mv_by_ac[ac_p]
 
        
         for dt in date_range:
@@ -1099,13 +1103,17 @@ def asset_class_performance():
 
 
             # Step 3 — compute today's closing MV, compound TWR factor
-            all_active = set(ac_holdings.keys()) | set(pre_cf_mv.keys())
+            all_active = set(ac_holdings.keys()) | set(pre_cf_mv.keys()) | {"C&CE"}
             for ac in all_active:
                 holdings  = ac_holdings.get(ac, {})
+                extra = hist_cash.get(ds, 0.0) if ac == "C&CE" else 0.0
+
                 if dt == last_bday and ac in live_mv_by_ac:
-                    mv_post = live_mv_by_ac[ac]
+                    # For the live/final day, also add live residual cash to C&CE
+                    live_cash_final = hist_cash.get(ds, 0.0) if ac == "C&CE" else 0.0
+                    mv_post = live_mv_by_ac[ac] + live_cash_final
                 else:
-                    mv_post = _mv_for_ac(holdings, dt) if holdings else 0.0
+                    mv_post = _mv_for_ac(holdings, dt, extra_cash=extra) if holdings else extra
                 mv_post += income_by_ac_date.get(ds, {}).get(ac, 0.0)
                 
                 mv_before = max(pre_cf_mv.get(ac, 0.0), 0.0)
@@ -1114,13 +1122,15 @@ def asset_class_performance():
                 is_first_day = (ac not in ac_mv_prev or ac_mv_prev.get(ac) == -1.0) and cf > 0
 
                 if is_first_day:
-                    # On open day: anchor prev MV to cost basis, do NOT compound TWR yet
                     cost_basis_mv = sum(
                         h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
                         for h in holdings.values()
                     ) if holdings else 0.0
-                
+                    # For C&CE, anchor also includes the residual cash already sitting there
+                    if ac == "C&CE":
+                        cost_basis_mv += hist_cash.get(ds, 0.0)
                     ac_mv_prev[ac] = cost_basis_mv
+
                     growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)  # stays 0.0 on open day
                 elif mv_before > 0:
                     denom = mv_before + cf
