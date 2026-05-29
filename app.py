@@ -1023,7 +1023,9 @@ def asset_class_performance():
                     mv += p_base * fx_r * h["qty"]
                 except:
                     mv += h["avg_cost_base"] * fx_r * h["qty"]
-            return mv
+            # Convert USD total → EUR using same historical rate as build_nav_curve
+            eur_r = fx_on_date("EUR", dt)
+            return mv_usd / eur_r if eur_r > 0 else mv_usd
  
         # Build live MV per asset class using the same positions as /api/portfolio.
         open_pos_live, _ = build_positions(trades, fx_rates, manual_map)
@@ -1036,12 +1038,21 @@ def asset_class_performance():
             hist_fx    = fx_on_date(currency, last_bday) if last_bday is not None else fx_rates.get(fx_key(currency), 1.0)
             live_price = p.get("live_price") or p.get("avg_price", 0)
             qty        = p.get("quantity", 0)
-            # Recompute MV in USD using the same historical FX the loop has been using all along
             if is_lse_pence(currency):
-                price_base = live_price   # already divided by 100 in build_positions
+                price_base = live_price
             else:
                 price_base = live_price
-            live_mv_by_ac[ac_p] += price_base * hist_fx * qty
+            mv_usd = price_base * hist_fx * qty
+            # Convert to EUR — consistent with build_nav_curve display logic
+            eur_r_live = fx_rates.get("EUR", 1.0)   # spot EURUSD for today
+            live_mv_by_ac[ac_p] += mv_usd / eur_r_live if eur_r_live > 0 else mv_usd
+
+        # Include residual cash in C&CE for the live day
+        if last_bday is not None:
+            last_ds_live = last_bday.strftime("%Y-%m-%d")
+            eur_r_live   = fx_rates.get("EUR", 1.0)
+            cash_eur     = hist_cash.get(last_ds_live, 0.0) / eur_r_live if eur_r_live > 0 else hist_cash.get(last_ds_live, 0.0)
+            live_mv_by_ac["C&CE"] += cash_eur
 
        
         for dt in date_range:
@@ -1068,7 +1079,9 @@ def asset_class_performance():
                 if action == "OPEN":
                     holdings[tk]  = {"qty": qty, "yf_ticker": ytk,
                                      "currency": currency, "avg_cost_base": price_base}
-                    cf_net_by_ac[ac] += price_base * fx_on_date(currency, dt) * qty
+                    _cf_usd = price_base * fx_on_date(currency, dt) * qty
+                    _eur_r  = fx_on_date("EUR", dt)
+                    cf_net_by_ac[ac] += _cf_usd / _eur_r if _eur_r > 0 else _cf_usd
                     
                 elif action == "ADD":
                     if tk in holdings:
@@ -1080,7 +1093,9 @@ def asset_class_performance():
                     else:
                         holdings[tk] = {"qty": qty, "yf_ticker": ytk,
                                         "currency": currency, "avg_cost_base": price_base}
-                    cf_net_by_ac[ac] += price_base * fx_on_date(currency, dt) * qty
+                    _cf_usd = price_base * fx_on_date(currency, dt) * qty
+                    _eur_r  = fx_on_date("EUR", dt)
+                    cf_net_by_ac[ac] += _cf_usd / _eur_r if _eur_r > 0 else _cf_usd
                         
                 elif action == "REDUCE":
                     if tk in holdings:
@@ -1088,12 +1103,16 @@ def asset_class_performance():
                         holdings[tk]["qty"] -= reduce_qty
                         if holdings[tk]["qty"] <= 0:
                             del holdings[tk]
-                        cf_net_by_ac[ac] -= price_base * fx_on_date(currency, dt) * reduce_qty
+                        _cf_usd = price_base * fx_on_date(currency, dt) * reduce_qty
+                        _eur_r  = fx_on_date("EUR", dt)
+                        cf_net_by_ac[ac] -= _cf_usd / _eur_r if _eur_r > 0 else _cf_usd
                         
                 elif action == "CLOSE":
                     close_qty = holdings.get(tk, {}).get("qty", qty)
                     holdings.pop(tk, None)
-                    cf_net_by_ac[ac] -= price_base * fx_on_date(currency, dt) * close_qty
+                    _cf_usd = price_base * fx_on_date(currency, dt) * close_qty
+                    _eur_r  = fx_on_date("EUR", dt)
+                    cf_net_by_ac[ac] -= _cf_usd / _eur_r if _eur_r > 0 else _cf_usd
                     if not holdings:
                         ac_mv_prev[ac] = -1.0
 
@@ -1105,7 +1124,13 @@ def asset_class_performance():
                 if dt == last_bday and ac in live_mv_by_ac:
                     mv_post = live_mv_by_ac[ac]
                 else:
-                    mv_post = _mv_for_ac(holdings, dt) if holdings else 0.0
+                    if ac == "C&CE":
+                        # Include residual cash in EUR for C&CE sleeve
+                        eur_r     = fx_on_date("EUR", dt)
+                        cash_eur  = hist_cash.get(ds, 0.0) / eur_r if eur_r > 0 else hist_cash.get(ds, 0.0)
+                        mv_post   = _mv_for_ac(holdings, dt, extra_cash=cash_eur) if holdings else cash_eur
+                    else:
+                        mv_post = _mv_for_ac(holdings, dt) if holdings else 0.0
                 mv_post += income_by_ac_date.get(ds, {}).get(ac, 0.0)
                 
                 mv_before = max(pre_cf_mv.get(ac, 0.0), 0.0)
