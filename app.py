@@ -1083,7 +1083,7 @@ def asset_class_performance():
 
                 holdings = ac_holdings[ac]
                 if action == "OPEN":
-                    holdings[tk]  = {..."avg_cost_base": price_base}
+                    holdings[tk] = {"qty": qty, "yf_ticker": ytk, "currency": currency, "avg_cost_base": price_base}
                     _asset_fx = fx_on_date(currency, dt)
                     _disp_fx  = fx_on_date(disp, dt)
                     _fx_r     = (_asset_fx / _disp_fx) if (disp != "USD" and _disp_fx > 0) else _asset_fx
@@ -1113,7 +1113,7 @@ def asset_class_performance():
                         _asset_fx = fx_on_date(currency, dt)
                         _disp_fx  = fx_on_date(disp, dt)
                         _fx_r     = (_asset_fx / _disp_fx) if (disp != "USD" and _disp_fx > 0) else _asset_fx                        
-                        cf_net_by_ac[ac] -= price_base * fx_on_date(currency, dt) * reduce_qty
+                        cf_net_by_ac[ac] -= price_base * _fx_r * reduce_qty
                         
                 elif action == "CLOSE":
                     close_qty = holdings.get(tk, {}).get("qty", qty)
@@ -1121,7 +1121,7 @@ def asset_class_performance():
                     _asset_fx = fx_on_date(currency, dt)
                     _disp_fx  = fx_on_date(disp, dt)
                     _fx_r     = (_asset_fx / _disp_fx) if (disp != "USD" and _disp_fx > 0) else _asset_fx                    
-                    cf_net_by_ac[ac] -= price_base * fx_on_date(currency, dt) * close_qty
+                    cf_net_by_ac[ac] -= price_base * _fx_r * reduce_qty
                     if not holdings:
                         ac_mv_prev[ac] = -1.0
 
