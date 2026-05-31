@@ -1029,7 +1029,12 @@ def asset_class_performance():
             for tk, h in holdings_dict.items():
                 ytk      = h["yf_ticker"]
                 currency = h.get("currency", "USD")
-                fx_r     = fx_on_date(currency, dt)
+                asset_fx  = fx_on_date(currency, dt)   # e.g. EUR→USD
+                disp_fx   = fx_on_date(disp, dt)       # e.g. EUR→USD on that day
+                if disp != "USD" and disp_fx > 0:
+                    fx_r = asset_fx / disp_fx          # net: asset_ccy → display_ccy
+                else:
+                    fx_r = asset_fx                    # disp is USD, no change needed
                 if ytk not in prices.columns:
                     mv += h["avg_cost_base"] * fx_r * h["qty"]
                     continue
@@ -1128,13 +1133,14 @@ def asset_class_performance():
                 is_first_day = (ac not in ac_mv_prev or ac_mv_prev.get(ac) == -1.0) and cf > 0
 
                 if is_first_day:
-                    # On open day: anchor prev MV to cost basis, do NOT compound TWR yet
                     cost_basis_mv = sum(
-                        h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
+                        h["avg_cost_base"] * fx_on_date(h.get("currency","USD"), dt) * h["qty"]
                         for h in holdings.values()
                     ) if holdings else 0.0
-                
+                    if ac == "C&CE":
+                        cost_basis_mv += hist_cash.get(ds, 0.0)
                     ac_mv_prev[ac] = cost_basis_mv
+    
                     growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)  # stays 0.0 on open day
                 elif mv_before > 0:
                     denom = mv_before + cf
