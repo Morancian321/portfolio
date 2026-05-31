@@ -974,8 +974,7 @@ def asset_class_performance():
             r_tk   = str(raw_row.get("ticker", "")).strip()
             r_ac   = ticker_ac_map.get(r_tk, "Income")
             if r_date:
-                income_by_ac_date[r_date][r_ac] += parsed_row["cash_usd"]
-
+                income_by_ac_date[r_date][r_ac] += parsed_row["cash_usd"] * usd_to_disp
         date_range = pd.bdate_range(start=inception, end=today)
 
         income_by_date_total = defaultdict(float)
@@ -1121,8 +1120,8 @@ def asset_class_performance():
                 holdings  = ac_holdings.get(ac, {})
                 mv_post = _mv_for_ac(holdings, dt) if holdings else 0.0
                 if ac == "C&CE":
-                    mv_post += hist_cash.get(ds, 0.0)
-                mv_post += income_by_ac_date.get(ds, {}).get(ac, 0.0)
+                    mv_post += hist_cash_disp.get(ds, 0.0)
+                mv_post += _date.get(ds, {}).get(ac, 0.0)
                 
                 mv_before = max(pre_cf_mv.get(ac, 0.0), 0.0)
                 cf        = cf_net_by_ac.get(ac, 0.0)
