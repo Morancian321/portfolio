@@ -988,6 +988,9 @@ def asset_class_performance():
         hist_cash      = {}
         hist_cash_disp = {}
         _cash_running  = cfg["starting_capital"]
+        # Anchor C&CE to starting cash on inception day so TWR has a valid denominator
+        inception_ds = inception.strftime("%Y-%m-%d")
+        ac_mv_prev["C&CE"] = hist_cash.get(inception_ds, cfg["starting_capital"])
         for dt in date_range:
             ds = dt.strftime("%Y-%m-%d")
             for e in sorted(events_by_date.get(ds, []),
@@ -1114,12 +1117,11 @@ def asset_class_performance():
             all_active = set(ac_holdings.keys()) | set(pre_cf_mv.keys()) | {"C&CE"}
             for ac in all_active:
                 holdings  = ac_holdings.get(ac, {})
-                if dt == last_bday and ac in live_mv_by_ac:
-                    mv_post = live_mv_by_ac[ac]
-                else:
-                    mv_post = _mv_for_ac(holdings, dt) if holdings else 0.0
-                    if ac == "C&CE":
-                        mv_post += hist_cash.get(ds, 0.0)
+                mv_post = _mv_for_ac(holdings, dt) if holdings else 0.0
+                if ac == "C&CE":
+                    mv_post += hist_cash.get(ds, 0.0)
+                if dt == last_bday and ac == "C&CE":
+                    mv_post = live_mv_by_ac.get("C&CE", mv_post)
                 mv_post += income_by_ac_date.get(ds, {}).get(ac, 0.0)
                 
                 mv_before = max(pre_cf_mv.get(ac, 0.0), 0.0)
