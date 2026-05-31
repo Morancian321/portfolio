@@ -1268,8 +1268,8 @@ function renderPositions(root) {
         .filter(Boolean)
     );
     const AC_ORDER = ['Equity','Fixed Income','Infrastructure','Commodity','Energy/Utilities','C&CE'];
-    const classes = AC_ORDER.filter(ac => acData[ac]?.length > 0);
-
+    const classes = AC_ORDER.filter(ac =>
+      acData[ac]?.length > 0 && heldClasses.has(ac)
     );
     if (!classes.length) {
       const card = document.getElementById('acPerfCard');
