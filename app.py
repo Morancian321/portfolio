@@ -901,6 +901,8 @@ def asset_class_performance():
         trades, config_rows, manual_rows, nav_overrides_rows, income_rows = get_sheet_data()
         cfg       = parse_config(config_rows)
         fx_rates  = get_fx_rates()
+        disp        = cfg.get("display_currency", "USD")
+        usd_to_disp = (1.0 / fx_rates[disp]) if (disp != "USD" and disp in fx_rates) else 1.0
         manual_map = {r["ticker"]: r["manual_price"] for r in manual_rows if r.get("ticker")}
 
         inception = datetime.strptime(cfg["inception_date"], "%Y-%m-%d")
