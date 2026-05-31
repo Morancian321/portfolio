@@ -988,9 +988,6 @@ def asset_class_performance():
         hist_cash      = {}
         hist_cash_disp = {}
         _cash_running  = cfg["starting_capital"]
-        # Anchor C&CE to starting cash on inception day so TWR has a valid denominator
-        inception_ds = inception.strftime("%Y-%m-%d")
-        ac_mv_prev["C&CE"] = hist_cash.get(inception_ds, cfg["starting_capital"])
         for dt in date_range:
             ds = dt.strftime("%Y-%m-%d")
             for e in sorted(events_by_date.get(ds, []),
@@ -1117,15 +1114,13 @@ def asset_class_performance():
             all_active = set(ac_holdings.keys()) | set(pre_cf_mv.keys()) | {"C&CE"}
             for ac in all_active:
                 holdings  = ac_holdings.get(ac, {})
-                mv_post = _mv_for_ac(holdings, dt) if holdings else 0.0
-                if ac == "C&CE":
-                    mv_post += hist_cash.get(ds, 0.0)
                 if dt == last_bday and ac in live_mv_by_ac:
                     mv_post = live_mv_by_ac[ac]
                 else:
                     mv_post = _mv_for_ac(holdings, dt) if holdings else 0.0
                     if ac == "C&CE":
                         mv_post += hist_cash.get(ds, 0.0)
+                mv_post += income_by_ac_date.get(ds, {}).get(ac, 0.0)
                 
                 mv_before = max(pre_cf_mv.get(ac, 0.0), 0.0)
                 cf        = cf_net_by_ac.get(ac, 0.0)
@@ -1133,15 +1128,13 @@ def asset_class_performance():
                 is_first_day = (ac not in ac_mv_prev or ac_mv_prev.get(ac) == -1.0) and cf > 0
 
                 if is_first_day:
-                    if ac == "C&CE":
-                        cost_basis_mv = mv_post  # anchor to actual post-trade cash on first active day
-                    else:
-                        cost_basis_mv = sum(
-                            h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
-                            for h in holdings.values()
-                        ) if holdings else 0.0
+                    # On open day: anchor prev MV to cost basis, do NOT compound TWR yet
+                    cost_basis_mv = sum(
+                        h["avg_cost_base"] * fx_on_date(h.get("currency", "USD"), dt) * h["qty"]
+                        for h in holdings.values()
+                    ) if holdings else 0.0
+                
                     ac_mv_prev[ac] = cost_basis_mv
-                    
                     growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)  # stays 0.0 on open day
                 elif mv_before > 0:
                     denom = mv_before + cf
