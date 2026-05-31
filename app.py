@@ -1011,7 +1011,7 @@ def asset_class_performance():
                     hist_cash_disp[ds] = max(_cash_running / eur_rate, 0.0) if eur_rate > 0 else max(_cash_running * usd_to_disp, 0.0)
                 except:
                     hist_cash_disp[ds] = max(_cash_running * usd_to_disp, 0.0)
-                    elif disp == "GBP" and hist_gbpusd is not None:
+            elif disp == "GBP" and hist_gbpusd is not None:
                 try:
                     gbp_rate = float(hist_gbpusd.loc[:dt].iloc[-1])
                     hist_cash_disp[ds] = max(_cash_running / gbp_rate, 0.0) if gbp_rate > 0 else max(_cash_running * usd_to_disp, 0.0)
