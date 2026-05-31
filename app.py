@@ -699,6 +699,8 @@ def portfolio():
         trades, config_rows, manual_rows, nav_overrides_rows, income_rows = get_sheet_data()
         cfg          = parse_config(config_rows)
         fx_rates     = get_fx_rates()
+        disp        = cfg.get("display_currency", "USD")
+        usd_to_disp = (1.0 / fx_rates[disp]) if (disp != "USD" and disp in fx_rates) else 1.0
         rf_rate      = get_risk_free_rate()
         manual_map   = {r["ticker"]: r["manual_price"] for r in manual_rows if r.get("ticker")}
         nav_overrides = parse_nav_overrides(nav_overrides_rows)
@@ -981,8 +983,9 @@ def asset_class_performance():
 
         # Build a running cash balance identical to build_nav_curve
         # key: date_str -> float (USD)
-        hist_cash = {}
-        _cash_running = cfg["starting_capital"]
+        hist_cash      = {}
+        hist_cash_disp = {}
+        _cash_running  = cfg["starting_capital"]
         for dt in date_range:
             ds = dt.strftime("%Y-%m-%d")
             for e in sorted(events_by_date.get(ds, []),
@@ -1001,6 +1004,21 @@ def asset_class_performance():
                     _cash_running += p_usd * qty
             _cash_running += income_by_date_total.get(ds, 0.0)
             hist_cash[ds] = max(_cash_running, 0.0)
+            
+            if disp == "EUR" and hist_eurusd is not None:
+                try:
+                    eur_rate = float(hist_eurusd.loc[:dt].iloc[-1])
+                    hist_cash_disp[ds] = max(_cash_running / eur_rate, 0.0) if eur_rate > 0 else max(_cash_running * usd_to_disp, 0.0)
+                except:
+                    hist_cash_disp[ds] = max(_cash_running * usd_to_disp, 0.0)
+                    elif disp == "GBP" and hist_gbpusd is not None:
+                try:
+                    gbp_rate = float(hist_gbpusd.loc[:dt].iloc[-1])
+                    hist_cash_disp[ds] = max(_cash_running / gbp_rate, 0.0) if gbp_rate > 0 else max(_cash_running * usd_to_disp, 0.0)
+                except:
+                    hist_cash_disp[ds] = max(_cash_running * usd_to_disp, 0.0)
+            else:
+                hist_cash_disp[ds] = hist_cash[ds]
         
         ac_series  = defaultdict(list)
 
@@ -1023,6 +1041,19 @@ def asset_class_performance():
                     mv += p_base * fx_r * h["qty"]
                 except:
                     mv += h["avg_cost_base"] * fx_r * h["qty"]
+            # Convert USD total to display currency using historical FX (matches build_nav_curve logic)
+            if disp == "EUR" and hist_eurusd is not None:
+                try:
+                    eur_rate = float(hist_eurusd.loc[:dt].iloc[-1])
+                    return mv / eur_rate if eur_rate > 0 else mv * usd_to_disp
+                except:
+                    return mv * usd_to_disp
+            elif disp == "GBP" and hist_gbpusd is not None:
+                try:
+                    gbp_rate = float(hist_gbpusd.loc[:dt].iloc[-1])
+                    return mv / gbp_rate if gbp_rate > 0 else mv * usd_to_disp
+                except:
+                    return mv * usd_to_disp
             return mv
  
         # Build live MV per asset class using the same positions as /api/portfolio.
@@ -1031,17 +1062,25 @@ def asset_class_performance():
         live_mv_by_ac = defaultdict(float)
 
         for p in open_pos_live:
-            ac_p       = p["asset_class"]
-            currency   = p.get("currency", "USD")
-            hist_fx    = fx_on_date(currency, last_bday) if last_bday is not None else fx_rates.get(fx_key(currency), 1.0)
-            live_price = p.get("live_price") or p.get("avg_price", 0)
-            qty        = p.get("quantity", 0)
-            # Recompute MV in USD using the same historical FX the loop has been using all along
-            if is_lse_pence(currency):
-                price_base = live_price   # already divided by 100 in build_positions
-            else:
-                price_base = live_price
-            live_mv_by_ac[ac_p] += price_base * hist_fx * qty
+            live_mv_by_ac[p["asset_class"]] += p["mv_usd"]
+
+        # Inject the final-day live cash balance (display-currency converted) into C&CE
+        live_cash_usd = hist_cash.get(last_bday.strftime("%Y-%m-%d"), 0.0) if last_bday is not None else 0.0
+        if disp == "EUR" and hist_eurusd is not None and last_bday is not None:
+            try:
+                eur_rate       = float(hist_eurusd.loc[:last_bday].iloc[-1])
+                live_cash_disp = live_cash_usd / eur_rate if eur_rate > 0 else live_cash_usd * usd_to_disp
+            except:
+                live_cash_disp = live_cash_usd * usd_to_disp
+        elif disp == "GBP" and hist_gbpusd is not None and last_bday is not None:
+            try:
+                gbp_rate       = float(hist_gbpusd.loc[:last_bday].iloc[-1])
+                live_cash_disp = live_cash_usd / gbp_rate if gbp_rate > 0 else live_cash_usd * usd_to_disp
+            except:
+                live_cash_disp = live_cash_usd * usd_to_disp
+        else:
+            live_cash_disp = live_cash_usd
+        live_mv_by_ac["C&CE"] += live_cash_disp
 
        
         for dt in date_range:
@@ -1099,13 +1138,15 @@ def asset_class_performance():
 
 
             # Step 3 — compute today's closing MV, compound TWR factor
-            all_active = set(ac_holdings.keys()) | set(pre_cf_mv.keys())
+            all_active = set(ac_holdings.keys()) | set(pre_cf_mv.keys()) | {"C&CE"}
             for ac in all_active:
                 holdings  = ac_holdings.get(ac, {})
                 if dt == last_bday and ac in live_mv_by_ac:
                     mv_post = live_mv_by_ac[ac]
                 else:
                     mv_post = _mv_for_ac(holdings, dt) if holdings else 0.0
+                    if ac == "C&CE":
+                        mv_post += hist_cash_disp.get(ds, 0.0)
                 mv_post += income_by_ac_date.get(ds, {}).get(ac, 0.0)
                 
                 mv_before = max(pre_cf_mv.get(ac, 0.0), 0.0)
