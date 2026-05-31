@@ -1049,17 +1049,6 @@ def asset_class_performance():
                 except:
                     mv += h["avg_cost_base"] * fx_r * h["qty"]
             return mv
- 
-        # Build live MV per asset class using the same positions as /api/portfolio.
-        open_pos_live, _ = build_positions(trades, fx_rates, manual_map)
-        last_bday = date_range[-1] if len(date_range) > 0 else None
-        live_mv_by_ac = defaultdict(float)
-
-        for p in open_pos_live:
-            live_mv_by_ac[p["asset_class"]] += p["mv_usd"]
-
-        live_cash_usd = hist_cash.get(last_bday.strftime("%Y-%m-%d"), 0.0) if last_bday is not None else 0.0
-        live_mv_by_ac["C&CE"] += live_cash_usd
        
         for dt in date_range:
             ds = dt.strftime("%Y-%m-%d")
@@ -1130,12 +1119,9 @@ def asset_class_performance():
             all_active = set(ac_holdings.keys()) | set(pre_cf_mv.keys()) | {"C&CE"}
             for ac in all_active:
                 holdings  = ac_holdings.get(ac, {})
-                if dt == last_bday and ac in live_mv_by_ac:
-                    mv_post = live_mv_by_ac[ac]
-                else:
-                    mv_post = _mv_for_ac(holdings, dt) if holdings else 0.0
-                    if ac == "C&CE":
-                        mv_post += hist_cash.get(ds, 0.0)
+                mv_post = _mv_for_ac(holdings, dt) if holdings else 0.0
+                if ac == "C&CE":
+                    mv_post += hist_cash.get(ds, 0.0)
                 mv_post += income_by_ac_date.get(ds, {}).get(ac, 0.0)
                 
                 mv_before = max(pre_cf_mv.get(ac, 0.0), 0.0)
