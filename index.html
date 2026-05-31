@@ -1271,7 +1271,6 @@ function renderPositions(root) {
     const classes = AC_ORDER.filter(ac =>
       acData[ac]?.length > 0
     );
-    );
     if (!classes.length) {
       const card = document.getElementById('acPerfCard');
       if (card) card.innerHTML = EmptyState('📊', 'No performance data', 'Asset class series will appear once the new endpoint is deployed.');
