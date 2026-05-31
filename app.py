@@ -1121,7 +1121,7 @@ def asset_class_performance():
                     _asset_fx = fx_on_date(currency, dt)
                     _disp_fx  = fx_on_date(disp, dt)
                     _fx_r     = (_asset_fx / _disp_fx) if (disp != "USD" and _disp_fx > 0) else _asset_fx                    
-                    cf_net_by_ac[ac] -= price_base * _fx_r * reduce_qty
+                    cf_net_by_ac[ac] -= price_base * _fx_r * close_qty
                     if not holdings:
                         ac_mv_prev[ac] = -1.0
 
