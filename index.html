@@ -1269,7 +1269,8 @@ function renderPositions(root) {
     );
     const AC_ORDER = ['Equity','Fixed Income','Infrastructure','Commodity','Energy/Utilities','C&CE'];
     const classes = AC_ORDER.filter(ac =>
-      acData[ac]?.length > 0 && heldClasses.has(ac)
+      acData[ac]?.length > 0
+    );
     );
     if (!classes.length) {
       const card = document.getElementById('acPerfCard');
