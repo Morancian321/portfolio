@@ -952,8 +952,8 @@ def asset_class_performance():
         events_by_date = defaultdict(list)
         for t in trades:
             events_by_date[t["date"]].append(t)
-       
-                # TWR state
+
+        # TWR state
         ac_holdings   = defaultdict(dict)
         ac_twr_factor = defaultdict(lambda: 1.0)
         ac_mv_prev    = {}
@@ -1068,7 +1068,7 @@ def asset_class_performance():
                 except:
                     mv += h["avg_cost_base"] * fx_r * h["qty"]
             return mv  # display currency
-       
+
         for dt in date_range:
             ds = dt.strftime("%Y-%m-%d")
 
@@ -1181,20 +1181,6 @@ def asset_class_performance():
                     growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
                     ac_mv_prev[ac + "_local"] = mv_post_local if holdings else 0.0
                     ac_mv_prev[ac]            = mv_post_disp  if holdings else 0.0
-    
-                    growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)  # stays 0.0 on open day
-                elif mv_before > 0:
-                    denom = mv_before + cf
-                    if denom > 0:
-                        sub_r = (mv_post - mv_before - cf) / denom
-                    else:
-                        sub_r = (mv_post - mv_before - cf) / mv_before
-                    ac_twr_factor[ac] *= (1.0 + sub_r)
-                    growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
-                    ac_mv_prev[ac] = mv_post if holdings else 0.0
-                else:
-                    growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
-                    ac_mv_prev[ac] = mv_post if holdings else 0.0
 
                 if holdings or growth_pct != 0.0:
                     ac_series[ac].append({"date": ds, "growth_pct": growth_pct})
