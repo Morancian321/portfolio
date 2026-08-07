@@ -1171,7 +1171,7 @@ def asset_class_performance():
                     _mv_for_ac(
                         holdings,
                         dt,
-                        extra_cash_disp=hist_cash_disp.get(ds, 0.0)
+                        extra_cash=hist_cash_disp.get(ds, 0.0)
                     )
                     if holdings
                     else (hist_cash_disp.get(ds, 0.0) if ac == "C&CE" else 0.0)
