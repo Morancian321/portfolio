@@ -1023,6 +1023,40 @@ def asset_class_performance():
         
         ac_series  = defaultdict(list)
 
+        def _mv_local(holdings_dict, dt):
+            """Market value in USD for TWR calculations; excludes display-currency FX."""
+            mv = 0.0
+
+            for tk, h in holdings_dict.items():
+                ytk = h["yf_ticker"]
+                currency = h.get("currency", "USD")
+                asset_fx = fx_on_date(currency, dt)
+
+                if ytk not in prices.columns:
+                    mv += h["avg_cost_base"] * asset_fx * h["qty"]
+                    continue
+
+                try:
+                    subset = prices.loc[:dt, ytk].dropna()
+
+                    if subset.empty:
+                        mv += h["avg_cost_base"] * asset_fx * h["qty"]
+                        continue
+
+                    p_raw = float(subset.iloc[-1])
+                    p_base = (
+                        normalize_gbx_price(p_raw, h["avg_cost_base"])
+                        if is_lse_pence(currency)
+                        else p_raw
+                    )
+
+                    mv += p_base * asset_fx * h["qty"]
+
+                except Exception:
+                    mv += h["avg_cost_base"] * asset_fx * h["qty"]
+
+            return mv
+            
         def _mv_for_ac(holdings_dict, dt, extra_cash=0.0):
             mv = extra_cash
             for tk, h in holdings_dict.items():
@@ -1117,44 +1151,85 @@ def asset_class_performance():
             # Step 3 — compute today's closing MV, compound TWR factor
             all_active = set(ac_holdings.keys()) | set(pre_cf_mv.keys()) | {"C&CE"}
             for ac in all_active:
-                holdings  = ac_holdings.get(ac, {})
-                mv_post = _mv_for_ac(holdings, dt) if holdings else 0.0
-                if ac == "C&CE":
-                    mv_post += hist_cash_disp.get(ds, 0.0)
-                mv_post += _date.get(ds, {}).get(ac, 0.0)
-                
-                mv_before = max(pre_cf_mv.get(ac, 0.0), 0.0)
-                cf        = cf_net_by_ac.get(ac, 0.0)
+                holdings = ac_holdings.get(ac, {})
 
-                is_first_day = (ac not in ac_mv_prev or ac_mv_prev.get(ac) == -1.0) and cf > 0
+                # Performance valuation: USD/local-market-value basis.
+                # This must be used for the asset-class return calculation.
+                mv_post_local = _mv_local(holdings, dt) if holdings else 0.0
+
+                if ac == "C&CE":
+                    mv_post_local += hist_cash.get(ds, 0.0)
+
+                # income_by_ac_date is in display currency in the current model,
+                # so translate it back to USD before using it in a USD TWR calculation.
+                income_disp = income_by_ac_date.get(ds, {}).get(ac, 0.0)
+                income_usd = income_disp / usd_to_disp if usd_to_disp > 0 else 0.0
+                mv_post_local += income_usd
+
+                # Retain a display-currency value only for reporting/reference.
+                mv_post_disp = (
+                    _mv_for_ac(
+                        holdings,
+                        dt,
+                        extra_cash_disp=hist_cash_disp.get(ds, 0.0)
+                    )
+                    if holdings
+                    else (hist_cash_disp.get(ds, 0.0) if ac == "C&CE" else 0.0)
+                )
+
+                mv_before_local = max(ac_mv_prev.get(ac + "_local", 0.0), 0.0)
+
+                # The current cash-flow map is display currency, so translate to USD.
+                cf_disp = cf_net_by_ac.get(ac, 0.0)
+                disp_fx_today = fx_on_date(disp, dt)
+                cf_usd = (
+                    cf_disp * disp_fx_today
+                    if disp != "USD" and disp_fx_today > 0
+                    else cf_disp
+                )
+
+                is_first_day = (
+                    ac not in ac_mv_prev
+                    or ac_mv_prev.get(ac) == -1.0
+                ) and cf_usd > 0
 
                 if is_first_day:
-                    _disp_fx_anchor = fx_on_date(disp, dt)
-                    cost_basis_mv = sum(
+                    cost_basis_usd = sum(
                         h["avg_cost_base"]
-                        * (fx_on_date(h.get("currency","USD"), dt) / _disp_fx_anchor
-                           if (disp != "USD" and _disp_fx_anchor > 0)
-                           else fx_on_date(h.get("currency","USD"), dt))
+                        * fx_on_date(h.get("currency", "USD"), dt)
                         * h["qty"]
                         for h in holdings.values()
                     ) if holdings else 0.0
+
                     if ac == "C&CE":
-                        cost_basis_mv += hist_cash.get(ds, 0.0)
-                    ac_mv_prev[ac] = cost_basis_mv
-    
-                    growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)  # stays 0.0 on open day
-                elif mv_before > 0:
-                    denom = mv_before + cf
-                    if denom > 0:
-                        sub_r = (mv_post - mv_before - cf) / denom
-                    else:
-                        sub_r = (mv_post - mv_before - cf) / mv_before
+                        cost_basis_usd += hist_cash.get(ds, 0.0)
+
+                    ac_mv_prev[ac + "_local"] = cost_basis_usd
+                    ac_mv_prev[ac] = mv_post_disp
+                    growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
+
+                elif mv_before_local > 0:
+                    denominator = mv_before_local + cf_usd
+
+                    sub_r = (
+                        (mv_post_local - mv_before_local - cf_usd)
+                        / (denominator if denominator > 0 else mv_before_local)
+                    )
+
                     ac_twr_factor[ac] *= (1.0 + sub_r)
                     growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
-                    ac_mv_prev[ac] = mv_post if holdings else 0.0
+
+                    ac_mv_prev[ac + "_local"] = (
+                        mv_post_local if holdings else 0.0
+                    )
+                    ac_mv_prev[ac] = mv_post_disp if holdings else 0.0
+
                 else:
                     growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
-                    ac_mv_prev[ac] = mv_post if holdings else 0.0
+                    ac_mv_prev[ac + "_local"] = (
+                        mv_post_local if holdings else 0.0
+                    )
+                    ac_mv_prev[ac] = mv_post_disp if holdings else 0.0
 
                 if holdings or growth_pct != 0.0:
                     ac_series[ac].append({"date": ds, "growth_pct": growth_pct})
