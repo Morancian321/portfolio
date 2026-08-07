@@ -1121,7 +1121,7 @@ def asset_class_performance():
                 mv_post = _mv_for_ac(holdings, dt) if holdings else 0.0
                 if ac == "C&CE":
                     mv_post += hist_cash_disp.get(ds, 0.0)
-                mv_post += income_by_ac_date.get(ds, {}).get(ac, 0.0)
+                mv_post += _date.get(ds, {}).get(ac, 0.0)
                 
                 mv_before = max(pre_cf_mv.get(ac, 0.0), 0.0)
                 cf        = cf_net_by_ac.get(ac, 0.0)
