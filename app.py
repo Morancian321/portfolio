@@ -696,13 +696,11 @@ def calc_benchmark_metrics(bench_series, rf_annual=0.043):
 @app.route("/api/portfolio")
 def portfolio():
     try:
-        trades, config_rows, manual_rows, nav_overrides_rows, income_rows = get_sheet_data()
+        trades, config_rows, _, nav_overrides_rows, income_rows = get_sheet_data()
         cfg          = parse_config(config_rows)
         fx_rates     = get_fx_rates()
         disp        = cfg.get("display_currency", "USD")
-        usd_to_disp = (1.0 / fx_rates[disp]) if (disp != "USD" and disp in fx_rates) else 1.0
         rf_rate      = get_risk_free_rate()
-        manual_map   = {r["ticker"]: r["manual_price"] for r in manual_rows if r.get("ticker")}
         nav_overrides = parse_nav_overrides(nav_overrides_rows)
 
         income_records   = parse_income(income_rows, fx_rates)
@@ -965,16 +963,6 @@ def asset_class_performance():
             if ac:
                 ticker_ac_map[tk] = ac
 
-        # FIX 18b: Build {date_str: {ac: income_usd}} keyed by ac.
-        # Uses zip(income_rows, income_records) — O(n), no index lookup.
-        from collections import defaultdict as _dd
-        income_by_ac_date = _dd(lambda: _dd(float))
-        for raw_row, parsed_row in zip(income_rows, income_records):
-            r_date = parsed_row.get("date", "")
-            r_tk   = str(raw_row.get("ticker", "")).strip()
-            r_ac   = ticker_ac_map.get(r_tk, "Income")
-            if r_date:
-                income_by_ac_date[r_date][r_ac] += parsed_row["cash_usd"] * usd_to_disp
         date_range = pd.bdate_range(start=inception, end=today)
 
         income_by_date_total = defaultdict(float)
@@ -984,69 +972,80 @@ def asset_class_performance():
 
         # Build a running cash balance identical to build_nav_curve
         # key: date_str -> float (USD)
-        hist_cash      = {}
-        hist_cash_disp = {}
-        _cash_running  = cfg["starting_capital"]
+        hist_cash = {}
+        _cash_running = cfg["starting_capital"]
+
         for dt in date_range:
             ds = dt.strftime("%Y-%m-%d")
-            for e in sorted(events_by_date.get(ds, []),
-                            key=lambda x: ACTION_ORDER.get(x.get("action", "").upper(), 99)):
+
+            for e in sorted(
+                events_by_date.get(ds, []),
+                key=lambda x: ACTION_ORDER.get(
+                    x.get("action", "").upper(),
+                    99
+                )
+            ):
                 qty      = float(e.get("quantity", 0))
                 price    = float(e.get("price", 0))
                 action   = e.get("action", "").upper()
                 ytk      = e.get("yf_ticker", e["ticker"])
                 currency = get_currency(e, ytk)
                 fx_r     = fx_on_date(currency, dt)
-                price_base = price / 100 if is_lse_pence(currency) else price
-                p_usd    = price_base * fx_r
+
+                price_base = (
+                    price / 100
+                    if is_lse_pence(currency)
+                    else price
+                )
+
+                p_usd = price_base * fx_r
+
                 if action in ("OPEN", "ADD"):
                     _cash_running -= p_usd * qty
+
                 elif action in ("REDUCE", "CLOSE"):
                     _cash_running += p_usd * qty
-            _cash_running += income_by_date_total.get(ds, 0.0)
-            hist_cash[ds] = max(_cash_running, 0.0)
-            
-            if disp == "EUR" and hist_eurusd is not None:
-                try:
-                    eur_rate = float(hist_eurusd.loc[:dt].iloc[-1])
-                    hist_cash_disp[ds] = max(_cash_running / eur_rate, 0.0) if eur_rate > 0 else max(_cash_running * usd_to_disp, 0.0)
-                except:
-                    hist_cash_disp[ds] = max(_cash_running * usd_to_disp, 0.0)
-            elif disp == "GBP" and hist_gbpusd is not None:
-                try:
-                    gbp_rate = float(hist_gbpusd.loc[:dt].iloc[-1])
-                    hist_cash_disp[ds] = max(_cash_running / gbp_rate, 0.0) if gbp_rate > 0 else max(_cash_running * usd_to_disp, 0.0)
-                except:
-                    hist_cash_disp[ds] = max(_cash_running * usd_to_disp, 0.0)
-            else:
-                hist_cash_disp[ds] = hist_cash[ds]
-        
-        ac_series  = defaultdict(list)
 
-        def _mv_for_ac(holdings_dict, dt, extra_cash=0.0):
-            mv = extra_cash
+            # Income is credited to cash in USD once.
+            _cash_running += income_by_date_total.get(ds, 0.0)
+
+            hist_cash[ds] = max(_cash_running, 0.0)
+
+        ac_series = defaultdict(list)
+       
+        def _mv_local(holdings_dict, dt):
+            """Market value in USD for TWR calculations; excludes display-currency FX."""
+            mv = 0.0
+
             for tk, h in holdings_dict.items():
-                ytk      = h["yf_ticker"]
+                ytk = h["yf_ticker"]
                 currency = h.get("currency", "USD")
-                asset_fx  = fx_on_date(currency, dt)   # e.g. EUR→USD
-                disp_fx   = fx_on_date(disp, dt)       # e.g. EUR→USD on that day
-                if disp != "USD" and disp_fx > 0:
-                    fx_r = asset_fx / disp_fx          # net: asset_ccy → display_ccy
-                else:
-                    fx_r = asset_fx                    # disp is USD, no change needed
+                asset_fx = fx_on_date(currency, dt)
+
                 if ytk not in prices.columns:
-                    mv += h["avg_cost_base"] * fx_r * h["qty"]
+                    mv += h["avg_cost_base"] * asset_fx * h["qty"]
                     continue
+
                 try:
                     subset = prices.loc[:dt, ytk].dropna()
+
                     if subset.empty:
-                        mv += h["avg_cost_base"] * fx_r * h["qty"]
+                        mv += h["avg_cost_base"] * asset_fx * h["qty"]
                         continue
-                    p_raw  = float(subset.iloc[-1])
-                    p_base = normalize_gbx_price(p_raw, h["avg_cost_base"]) if is_lse_pence(currency) else p_raw
-                    mv += p_base * fx_r * h["qty"]
-                except:
-                    mv += h["avg_cost_base"] * fx_r * h["qty"]
+
+                    p_raw = float(subset.iloc[-1])
+
+                    p_base = (
+                        normalize_gbx_price(p_raw, h["avg_cost_base"])
+                        if is_lse_pence(currency)
+                        else p_raw
+                    )
+
+                    mv += p_base * asset_fx * h["qty"]
+
+                except Exception:
+                    mv += h["avg_cost_base"] * asset_fx * h["qty"]
+
             return mv
        
         for dt in date_range:
@@ -1076,6 +1075,7 @@ def asset_class_performance():
                     _disp_fx  = fx_on_date(disp, dt)
                     _fx_r     = (_asset_fx / _disp_fx) if (disp != "USD" and _disp_fx > 0) else _asset_fx
                     cf_net_by_ac[ac] += price_base * _fx_r * qty
+                    cf_net_by_ac["C&CE"] -= price_base * _fx_r * qty
                     
                 elif action == "ADD":
                     if tk in holdings:
@@ -1091,6 +1091,7 @@ def asset_class_performance():
                     _disp_fx  = fx_on_date(disp, dt)
                     _fx_r     = (_asset_fx / _disp_fx) if (disp != "USD" and _disp_fx > 0) else _asset_fx
                     cf_net_by_ac[ac] += price_base * _fx_r * qty
+                    cf_net_by_ac["C&CE"] -= price_base * _fx_r * qty
                         
                 elif action == "REDUCE":
                     if tk in holdings:
@@ -1102,66 +1103,113 @@ def asset_class_performance():
                         _disp_fx  = fx_on_date(disp, dt)
                         _fx_r     = (_asset_fx / _disp_fx) if (disp != "USD" and _disp_fx > 0) else _asset_fx                        
                         cf_net_by_ac[ac] -= price_base * _fx_r * reduce_qty
+                        cf_net_by_ac["C&CE"] += price_base * _fx_r * reduce_qty
                         
                 elif action == "CLOSE":
-                    close_qty = holdings.get(tk, {}).get("qty", qty)
-                    holdings.pop(tk, None)
-                    _asset_fx = fx_on_date(currency, dt)
-                    _disp_fx  = fx_on_date(disp, dt)
-                    _fx_r     = (_asset_fx / _disp_fx) if (disp != "USD" and _disp_fx > 0) else _asset_fx                    
-                    cf_net_by_ac[ac] -= price_base * _fx_r * close_qty
-                    if not holdings:
-                        ac_mv_prev[ac] = -1.0
+                    if tk in holdings:
+                       close_qty = holdings[tk]["qty"]
+                       holdings.pop(tk)
+
+                       _asset_fx = fx_on_date(currency, dt)
+                       _disp_fx  = fx_on_date(disp, dt)
+
+                       _fx_r = (
+                           _asset_fx / _disp_fx
+                           if disp != "USD" and _disp_fx > 0
+                           else _asset_fx
+                       )
+
+                       trade_value_display = price_base * _fx_r * close_qty
+
+                       cf_net_by_ac[ac] -= trade_value_display
+                       cf_net_by_ac["C&CE"] += trade_value_display
 
 
             # Step 3 — compute today's closing MV, compound TWR factor
             all_active = set(ac_holdings.keys()) | set(pre_cf_mv.keys()) | {"C&CE"}
             for ac in all_active:
-                holdings  = ac_holdings.get(ac, {})
-                mv_post = _mv_for_ac(holdings, dt) if holdings else 0.0
-                if ac == "C&CE":
-                    mv_post += hist_cash_disp.get(ds, 0.0)
-                mv_post += income_by_ac_date.get(ds, {}).get(ac, 0.0)
-                
-                mv_before = max(pre_cf_mv.get(ac, 0.0), 0.0)
-                cf        = cf_net_by_ac.get(ac, 0.0)
+                holdings = ac_holdings.get(ac, {})
 
-                is_first_day = (ac not in ac_mv_prev or ac_mv_prev.get(ac) == -1.0) and cf > 0
+                # USD market value for TWR calculations
+                mv_post_local = _mv_local(holdings, dt) if holdings else 0.0
+
+                if ac == "C&CE":
+                    mv_post_local += hist_cash.get(ds, 0.0)
+
+
+                # Cash flows are stored in display currency.
+                # Convert them to USD using the same convention as the existing
+                # portfolio-level performance calculation.
+                cf_disp = cf_net_by_ac.get(ac, 0.0)
+
+                disp_fx_today = fx_on_date(disp, dt)
+
+                cf_usd = (
+                    cf_disp * disp_fx_today
+                    if disp != "USD" and disp_fx_today > 0
+                    else cf_disp
+                )
+
+                mv_before_local = max(
+                    pre_cf_mv.get(ac, 0.0),
+                    0.0
+                )
+
+                is_first_day = (
+                    ac not in pre_cf_mv
+                    or pre_cf_mv.get(ac) == -1.0
+                ) and cf_usd > 0
 
                 if is_first_day:
-                    _disp_fx_anchor = fx_on_date(disp, dt)
-                    cost_basis_mv = sum(
-                        h["avg_cost_base"]
-                        * (fx_on_date(h.get("currency","USD"), dt) / _disp_fx_anchor
-                           if (disp != "USD" and _disp_fx_anchor > 0)
-                           else fx_on_date(h.get("currency","USD"), dt))
-                        * h["qty"]
-                        for h in holdings.values()
-                    ) if holdings else 0.0
-                    if ac == "C&CE":
-                        cost_basis_mv += hist_cash.get(ds, 0.0)
-                    ac_mv_prev[ac] = cost_basis_mv
-    
-                    growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)  # stays 0.0 on open day
-                elif mv_before > 0:
-                    denom = mv_before + cf
-                    if denom > 0:
-                        sub_r = (mv_post - mv_before - cf) / denom
-                    else:
-                        sub_r = (mv_post - mv_before - cf) / mv_before
+                    # Do not calculate a return on the opening/contribution day.
+                    # The next day's denominator must be the actual closing MV,
+                    # not the original cost basis.
+                    ac_mv_prev[ac] = mv_post_local
+
+                    growth_pct = round(
+                        (ac_twr_factor[ac] - 1.0) * 100,
+                        4
+                    )
+
+                elif mv_before_local > 0:
+                    denominator = mv_before_local + cf_usd
+
+                    sub_r = (
+                        (
+                            mv_post_local
+                            - mv_before_local
+                            - cf_usd
+                        )
+                        / (
+                            denominator
+                            if denominator > 0
+                            else mv_before_local
+                        )
+                    )
+
                     ac_twr_factor[ac] *= (1.0 + sub_r)
-                    growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
-                    ac_mv_prev[ac] = mv_post if holdings else 0.0
+
+                    growth_pct = round(
+                        (ac_twr_factor[ac] - 1.0) * 100,
+                        4
+                    )
+
+                    # Carry forward actual closing USD market value.
+                    ac_mv_prev[ac] = mv_post_local
+
                 else:
-                    growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
-                    ac_mv_prev[ac] = mv_post if holdings else 0.0
+                    growth_pct = round(
+                        (ac_twr_factor[ac] - 1.0) * 100,
+                        4
+                    )
+
+                    # Maintain the USD valuation state even when no return
+                    # calculation can be performed.
+                    ac_mv_prev[ac] = mv_post_local
 
                 if holdings or growth_pct != 0.0:
                     ac_series[ac].append({"date": ds, "growth_pct": growth_pct})
 
-        today_str = today.strftime("%Y-%m-%d")
-
-        inception_str = inception.strftime("%Y-%m-%d")
         all_bdays = [d.strftime("%Y-%m-%d") for d in date_range]
 
         for ac in list(ac_series.keys()):
