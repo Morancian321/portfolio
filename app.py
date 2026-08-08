@@ -48,6 +48,7 @@ def is_lse_pence(currency):
  
 def fx_key(currency):
     return "GBP" if currency == "GBX" else currency
+
 def normalize_gbx_price(raw_price, avg_price_pounds):
     """
     Retained for GBX positions: yfinance may return pence or pounds inconsistently.
@@ -56,6 +57,7 @@ def normalize_gbx_price(raw_price, avg_price_pounds):
     if avg_price_pounds > 0 and raw_price > avg_price_pounds * 50:
         return raw_price / 100
     return raw_price
+
 
 def strip_outliers(df, threshold=0.125):
     pct = df.pct_change().abs()
@@ -80,10 +82,12 @@ def get_sheet_data():
         manual = sh.worksheet("manual_prices").get_all_records()
     except:
         manual = []
+    # FIX 8: Read nav_overrides tab for manual historical price corrections.
     try:
         nav_overrides_rows = sh.worksheet("nav_overrides").get_all_records()
     except:
         nav_overrides_rows = []
+    # FIX 13: Read dividends_coupons tab for dividend and coupon income.
     try:
         income_rows = sh.worksheet("dividends_coupons").get_all_records()
     except:
@@ -91,6 +95,10 @@ def get_sheet_data():
     return trades, config, manual, nav_overrides_rows, income_rows
 
 def parse_nav_overrides(rows):
+    """
+    Build a (date_str, yf_ticker) -> price lookup from the nav_overrides sheet.
+    Only rows with action == OVERRIDE_PRICE are included.
+    """
     overrides = {}
     for row in rows:
         if str(row.get("action", "")).upper() == "OVERRIDE_PRICE":
@@ -99,12 +107,13 @@ def parse_nav_overrides(rows):
     return overrides
 
 def parse_income(income_rows, fx_rates):
+   
     records = []
     for row in income_rows:
         amount_local = float(row.get("div_income", 0) or 0)
         currency     = str(row.get("currency", "USD")).strip().upper()
         fx           = fx_rates.get(fx_key(currency), 1.0)
-        income_type  = str(row.get("asset_class", "")).strip().capitalize()
+        income_type  = str(row.get("asset_class", "")).strip().capitalize()  # "Dividend" or "Coupon"
         records.append({
             "date":         str(row.get("date", "")),
             "income_type":  income_type,
@@ -116,6 +125,10 @@ def parse_income(income_rows, fx_rates):
     return records
 
 def apply_nav_overrides_to_prices(prices, nav_overrides):
+    """
+    FIX 8 (real fix): Stamp override values directly into the prices DataFrame
+    BEFORE strip_outliers is called.
+    """
     if not nav_overrides:
         return prices
     idx_map = {ts.strftime("%Y-%m-%d"): ts for ts in prices.index}
@@ -131,12 +144,13 @@ def parse_config(config_rows):
         "starting_capital": float(cfg.get("starting_capital", 100000)),
         "base_currency": cfg.get("base_currency", "USD"),
         "inception_date": cfg.get("inception_date", "2026-01-14"),
+        # FIX 17: updated benchmark defaults to current 50:50 composition.
         "benchmark": cfg.get("benchmark", "IWDA.AS"),
         "benchmark_bond": cfg.get("benchmark_bond", "AGGH.AS"),
         "benchmark_equity_weight": float(cfg.get("benchmark_equity_weight", 0.5)),
         "benchmark_bond_weight": float(cfg.get("benchmark_bond_weight", 0.5)),
         "portfolio_name": cfg.get("portfolio_name", "Investment Portfolio"),
-        "display_currency": cfg.get("display_currency", "USD"),
+        "display_currency": cfg.get("display_currency", "USD"), # FIX 14
     }
 
 def get_fx_rates():
@@ -151,7 +165,9 @@ def get_fx_rates():
     return rates
 
 def get_risk_free_rate():
+   
     import requests
+
     try:
         url = (
             "https://data-api.ecb.europa.eu/service/data/ST/"
@@ -166,6 +182,7 @@ def get_risk_free_rate():
                 return rate
     except:
         pass
+
     try:
         h = yf.Ticker("EURIBOR3M=X").history(period="5d")
         if not h.empty:
@@ -174,6 +191,7 @@ def get_risk_free_rate():
                 return rate / 100
     except:
         pass
+
     return 0.024
 
 def get_live_price(yf_ticker, manual_map):
@@ -206,12 +224,14 @@ def build_positions(trades, fx_rates, manual_map):
         asset_class = events_sorted[0].get("asset_class", "")
         name        = events_sorted[0].get("name", ticker)
         direction   = events_sorted[0].get("direction", "LONG")
+        # FIX 15: currency is now tracked per-position from the trade row.
         currency    = get_currency(events_sorted[0], events_sorted[0].get("yf_ticker", ticker))
 
         for e in events_sorted:
             action   = e.get("action", "").upper()
             qty      = float(e.get("quantity", 0))
             price    = float(e.get("price", 0))
+            # FIX 15: re-read currency on each event in case it changes (e.g. ADD row).
             e_currency = get_currency(e, e.get("yf_ticker", yf_ticker))
 
             if action == "OPEN":
@@ -222,25 +242,32 @@ def build_positions(trades, fx_rates, manual_map):
                 asset_class = e.get("asset_class", asset_class)
                 name        = e.get("name", name)
                 currency    = e_currency
+
             elif action == "ADD":
                 cost_basis += price * qty
                 qty_held   += qty
                 currency    = e_currency
+
             elif action == "REDUCE":
                 avg        = cost_basis / qty_held if qty_held else price
                 cost_basis -= avg * qty
                 qty_held   -= qty
+
                 fx           = fx_rates.get(fx_key(e_currency), 1.0)
+                # FIX 15: pence divide only for GBX; USD/GBP/EUR .L tickers use price as-is.
                 if is_lse_pence(e_currency):
                     avg_base   = avg / 100
                     price_base = price / 100
                 else:
                     avg_base   = avg
                     price_base = price
+
                 avg_usd   = avg_base * fx
                 price_usd = price_base * fx
+
                 realised_usd  = (price_usd - avg_usd) * qty
                 cost_usd_sold = avg_usd * qty
+
                 closed_trades.append({
                     "ticker":           ticker,
                     "name":             name,
@@ -253,9 +280,11 @@ def build_positions(trades, fx_rates, manual_map):
                     "yf_ticker":        yf_ticker,
                     "asset_class":      asset_class,
                 })
+
             elif action == "CLOSE":
                 close_qty = qty_held
                 avg       = cost_basis / close_qty if close_qty else price
+
                 fx = fx_rates.get(fx_key(e_currency), 1.0)
                 if is_lse_pence(e_currency):
                     avg_base   = avg / 100
@@ -263,10 +292,12 @@ def build_positions(trades, fx_rates, manual_map):
                 else:
                     avg_base   = avg
                     price_base = price
+
                 avg_usd      = avg_base * fx
                 price_usd    = price_base * fx
                 realised_usd = (price_usd - avg_usd) * close_qty
                 cost_usd_sold = avg_usd * close_qty
+
                 closed_trades.append({
                     "ticker":           ticker,
                     "name":             name,
@@ -286,10 +317,13 @@ def build_positions(trades, fx_rates, manual_map):
             live_price = get_live_price(yf_ticker, manual_map)
             fx         = fx_rates.get(fx_key(currency), 1.0)
             avg_price  = cost_basis / qty_held
+
+            # FIX 15: pence divide only for GBX.
             if is_lse_pence(currency):
                 ap = avg_price / 100
             else:
                 ap = avg_price
+
             if live_price is not None:
                 if is_lse_pence(currency):
                     lp = normalize_gbx_price(live_price, ap)
@@ -305,6 +339,8 @@ def build_positions(trades, fx_rates, manual_map):
                 cost_usd   = mv_usd
                 unreal_pnl = 0
                 unreal_pct = 0
+
+            
             open_positions.append({
                 "ticker":      ticker,
                 "name":        name,
@@ -352,6 +388,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
                       start=inception.strftime("%Y-%m-%d"),
                       end=(today + timedelta(days=1)).strftime("%Y-%m-%d"),
                       auto_adjust=True, progress=False)
+
     if isinstance(raw.columns, pd.MultiIndex):
         prices = raw["Close"]
     else:
@@ -391,7 +428,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
     events_by_date = defaultdict(list)
     for t in trades:
         events_by_date[t["date"]].append(t)
-
+                        
     income_by_date = defaultdict(float)
     for r in income_records:
         if r.get("date"):
@@ -408,7 +445,8 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
     for dt in date_range:
         ds = dt.strftime("%Y-%m-%d")
 
-        for e in sorted(events_by_date.get(ds, []), key=lambda x: ACTION_ORDER.get(x.get("action", "").upper(), 99)):
+        for e in sorted(events_by_date.get(ds, []), key=lambda x: 
+        ACTION_ORDER.get(x.get("action", "").upper(), 99)):
             tk       = e["ticker"]
             qty      = float(e.get("quantity", 0))
             price    = float(e.get("price", 0))
@@ -442,10 +480,10 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
                         holdings[tk]["qty"] -= close_qty
 
         cash += income_by_date.get(ds, 0.0)
-        if cash < 0:
-            cash = 0.0
+
 
         is_inception_day = (ds == cfg["inception_date"])
+
         is_final_date = (dt == last_date)
 
         if is_inception_day:
@@ -454,6 +492,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
                 currency = h.get("currency", get_currency({}, h["yf_ticker"]))
                 fx_r     = fx_on_date(currency, dt)
                 port_val += h["avg_cost_base"] * fx_r * h["qty"]
+            # inception day: use historical rate (same as else block)
             if disp_currency == "EUR":
                 hist_rate = fx_on_date("EUR", dt)
                 port_val_disp = port_val / hist_rate if hist_rate > 0 else port_val
@@ -463,6 +502,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
             else:
                 port_val_disp = port_val
             nav_series.append({"date": ds, "value": round(port_val_disp, 2)})
+
         elif is_final_date and live_positions_mv is not None and live_cash is not None:
             port_val = live_cash + live_positions_mv
             if disp_currency == "EUR":
@@ -474,6 +514,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
             else:
                 port_val_disp = port_val
             nav_series.append({"date": ds, "value": round(port_val_disp, 2)})
+
         else:
             port_val = cash
             for tk, h in holdings.items():
@@ -505,9 +546,10 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
             bond_p = float(prices.loc[:dt, bench_bond_ticker].iloc[-1]) if bench_bond_ticker in prices.columns else None
             if eq_p is not None and bond_p is not None:
                 if bench_start is None:
-                    eurusd_inception = fx_on_date("EUR", dt)
-                    starting_eur = starting / eurusd_inception
+                    eurusd_inception = fx_on_date("EUR", dt)        # reads hist_eurusd on inception date
+                    starting_eur = starting / eurusd_inception       # converts USD→EUR once, locked forever
                     bench_start = {"eq": eq_p, "bond": bond_p, "starting_eur": starting_eur}
+
                 blended = (
                     bench_start["starting_eur"] * (eq_p   / bench_start["eq"])   * bench_eq_w +
                     bench_start["starting_eur"] * (bond_p / bench_start["bond"]) * bench_bond_w
@@ -519,6 +561,7 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
     return nav_series, bench_series
 
 def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[], income_usd=0.0):
+    
     if len(nav_series) < 2:
         return {}
     import math
@@ -582,9 +625,13 @@ def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[]
     hit_rate_pct       = round(len(winners) / len(closed_trades) * 100, 1) if closed_trades else 0
     avg_gain_usd       = round(sum(t["realised_pnl_usd"] for t in winners) / len(winners), 2) if winners else 0.0
     avg_loss_usd       = round(sum(abs(t["realised_pnl_usd"]) for t in losers) / len(losers), 2) if losers else 0.0
-    total_realised_pnl = round(sum(t.get("realised_pnl_usd", 0) for t in closed_trades) + income_usd, 2)
+    # FIX 13: Include income (dividends + coupons) in total_realised_pnl.
+    total_realised_pnl = round(
+        sum(t.get("realised_pnl_usd", 0) for t in closed_trades) + income_usd, 2
+    )
 
     return {
+        # FIX 4: total_return_pct is NAV-based (canonical). Not overwritten outside.
         "total_return_pct":   round(total_return, 2),
         "Sharpe_ratio":       round(Sharpe, 2),
         "max_drawdown_pct":   round(max_dd * 100, 2),
@@ -601,6 +648,7 @@ def calc_metrics(nav_series, starting_capital, rf_annual=0.043, closed_trades=[]
     }
 
 def calc_benchmark_metrics(bench_series, rf_annual=0.043):
+ 
     if len(bench_series) < 2:
         return {
             "benchmark_sharpe":           None,
@@ -712,12 +760,17 @@ def portfolio():
         cce_mv        = sum(p["mv_usd"] for p in cce_positions)
         cce_total     = round(cce_mv + cash, 2)
 
+        # ── MOVED UP: resolve display currency early so build_nav_curve and
+        #    calc_metrics both receive values in the correct currency scale ──
         disp = cfg.get("display_currency", "USD")
+
+        # FIX 3: starting_capital in display currency, computed before build_nav_curve
         if disp != "USD" and disp in fx_rates:
             starting_capital_disp = round(cfg["starting_capital"] / fx_rates[disp], 2)
         else:
             starting_capital_disp = cfg["starting_capital"]
 
+        # FIX 4: pass disp_currency so NAV curve is converted historically inside the loop
         nav_series, bench_series = build_nav_curve(
             trades, fx_rates, cfg, cfg["benchmark"],
             nav_overrides=nav_overrides,
@@ -727,6 +780,7 @@ def portfolio():
             disp_currency=disp,
         )
 
+        # FIX 5: use starting_capital_disp so total_return_pct is EUR-consistent
         metrics = calc_metrics(
             nav_series, starting_capital_disp,
             rf_annual=rf_rate,
@@ -755,6 +809,7 @@ def portfolio():
             def conv(v):
                 return round(v * usd_to_disp, 2) if isinstance(v, (int, float)) else v
 
+            # starting_capital_disp already computed above — do NOT recompute here
             current_value_disp    = conv(total_val)
             total_pnl_disp        = conv(total_val - cfg["starting_capital"])
             cash_disp             = conv(cash)
@@ -775,11 +830,15 @@ def portfolio():
                 for field in ["realised_pnl_usd", "cost_usd_sold"]:
                     t[field] = conv(t[field])
 
+            # FIX 6: nav_series already in display currency from build_nav_curve — DO NOT convert again
+            # nav_series line removed here intentionally
+
             for r in income_records:
                 r["cash_usd"] = conv(r["cash_usd"])
 
         else:
             usd_to_disp           = 1.0
+            # starting_capital_disp already computed above
             current_value_disp    = round(total_val, 2)
             total_pnl_disp        = round(total_val - cfg["starting_capital"], 2)
             cash_disp             = round(cash, 2)
@@ -850,6 +909,7 @@ def asset_class_performance():
         today     = datetime.today()
         income_records = parse_income(income_rows, fx_rates)
 
+        # Build ticker → yf_ticker map and collect all tickers needed
         ticker_map = {}
         for t in trades:
             if t.get("yf_ticker") and t.get("ticker"):
@@ -892,7 +952,8 @@ def asset_class_performance():
         events_by_date = defaultdict(list)
         for t in trades:
             events_by_date[t["date"]].append(t)
-
+       
+                # TWR state
         ac_holdings   = defaultdict(dict)
         ac_twr_factor = defaultdict(lambda: 1.0)
         ac_mv_prev    = {}
@@ -904,6 +965,8 @@ def asset_class_performance():
             if ac:
                 ticker_ac_map[tk] = ac
 
+        # FIX 18b: Build {date_str: {ac: income_usd}} keyed by ac.
+        # Uses zip(income_rows, income_records) — O(n), no index lookup.
         from collections import defaultdict as _dd
         income_by_ac_date = _dd(lambda: _dd(float))
         for raw_row, parsed_row in zip(income_rows, income_records):
@@ -919,6 +982,8 @@ def asset_class_performance():
             if r.get("date"):
                 income_by_date_total[r["date"]] += r["cash_usd"]
 
+        # Build a running cash balance identical to build_nav_curve
+        # key: date_str -> float (USD)
         hist_cash      = {}
         hist_cash_disp = {}
         _cash_running  = cfg["starting_capital"]
@@ -939,10 +1004,8 @@ def asset_class_performance():
                 elif action in ("REDUCE", "CLOSE"):
                     _cash_running += p_usd * qty
             _cash_running += income_by_date_total.get(ds, 0.0)
-            if _cash_running < 0:
-                _cash_running = 0.0
-            hist_cash[ds] = _cash_running
-
+            hist_cash[ds] = max(_cash_running, 0.0)
+            
             if disp == "EUR" and hist_eurusd is not None:
                 try:
                     eur_rate = float(hist_eurusd.loc[:dt].iloc[-1])
@@ -957,7 +1020,7 @@ def asset_class_performance():
                     hist_cash_disp[ds] = max(_cash_running * usd_to_disp, 0.0)
             else:
                 hist_cash_disp[ds] = hist_cash[ds]
-
+        
         ac_series  = defaultdict(list)
 
         def _mv_for_ac(holdings_dict, dt, extra_cash=0.0):
@@ -965,12 +1028,12 @@ def asset_class_performance():
             for tk, h in holdings_dict.items():
                 ytk      = h["yf_ticker"]
                 currency = h.get("currency", "USD")
-                asset_fx  = fx_on_date(currency, dt)
-                disp_fx   = fx_on_date(disp, dt)
+                asset_fx  = fx_on_date(currency, dt)   # e.g. EUR→USD
+                disp_fx   = fx_on_date(disp, dt)       # e.g. EUR→USD on that day
                 if disp != "USD" and disp_fx > 0:
-                    fx_r = asset_fx / disp_fx
+                    fx_r = asset_fx / disp_fx          # net: asset_ccy → display_ccy
                 else:
-                    fx_r = asset_fx
+                    fx_r = asset_fx                    # disp is USD, no change needed
                 if ytk not in prices.columns:
                     mv += h["avg_cost_base"] * fx_r * h["qty"]
                     continue
@@ -985,12 +1048,15 @@ def asset_class_performance():
                 except:
                     mv += h["avg_cost_base"] * fx_r * h["qty"]
             return mv
-
+       
         for dt in date_range:
             ds = dt.strftime("%Y-%m-%d")
-            pre_cf_mv = dict(ac_mv_prev)
-            cf_net_by_ac = defaultdict(float)
 
+            # Step 1 — pre-cashflow MV = yesterday's stored closing MV
+            pre_cf_mv = dict(ac_mv_prev)
+            cf_net_by_ac = defaultdict(float)  
+
+            # Step 2 — apply trades
             for e in sorted(events_by_date.get(ds, []),
                             key=lambda x: ACTION_ORDER.get(x.get("action", "").upper(), 99)):
                 tk         = e["ticker"]
@@ -1010,6 +1076,7 @@ def asset_class_performance():
                     _disp_fx  = fx_on_date(disp, dt)
                     _fx_r     = (_asset_fx / _disp_fx) if (disp != "USD" and _disp_fx > 0) else _asset_fx
                     cf_net_by_ac[ac] += price_base * _fx_r * qty
+                    
                 elif action == "ADD":
                     if tk in holdings:
                         old       = holdings[tk]
@@ -1024,6 +1091,7 @@ def asset_class_performance():
                     _disp_fx  = fx_on_date(disp, dt)
                     _fx_r     = (_asset_fx / _disp_fx) if (disp != "USD" and _disp_fx > 0) else _asset_fx
                     cf_net_by_ac[ac] += price_base * _fx_r * qty
+                        
                 elif action == "REDUCE":
                     if tk in holdings:
                         reduce_qty = min(qty, holdings[tk]["qty"])
@@ -1032,18 +1100,21 @@ def asset_class_performance():
                             del holdings[tk]
                         _asset_fx = fx_on_date(currency, dt)
                         _disp_fx  = fx_on_date(disp, dt)
-                        _fx_r     = (_asset_fx / _disp_fx) if (disp != "USD" and _disp_fx > 0) else _asset_fx
+                        _fx_r     = (_asset_fx / _disp_fx) if (disp != "USD" and _disp_fx > 0) else _asset_fx                        
                         cf_net_by_ac[ac] -= price_base * _fx_r * reduce_qty
+                        
                 elif action == "CLOSE":
                     close_qty = holdings.get(tk, {}).get("qty", qty)
                     holdings.pop(tk, None)
                     _asset_fx = fx_on_date(currency, dt)
                     _disp_fx  = fx_on_date(disp, dt)
-                    _fx_r     = (_asset_fx / _disp_fx) if (disp != "USD" and _disp_fx > 0) else _asset_fx
+                    _fx_r     = (_asset_fx / _disp_fx) if (disp != "USD" and _disp_fx > 0) else _asset_fx                    
                     cf_net_by_ac[ac] -= price_base * _fx_r * close_qty
                     if not holdings:
                         ac_mv_prev[ac] = -1.0
 
+
+            # Step 3 — compute today's closing MV, compound TWR factor
             all_active = set(ac_holdings.keys()) | set(pre_cf_mv.keys()) | {"C&CE"}
             for ac in all_active:
                 holdings  = ac_holdings.get(ac, {})
@@ -1051,7 +1122,7 @@ def asset_class_performance():
                 if ac == "C&CE":
                     mv_post += hist_cash_disp.get(ds, 0.0)
                 mv_post += income_by_ac_date.get(ds, {}).get(ac, 0.0)
-
+                
                 mv_before = max(pre_cf_mv.get(ac, 0.0), 0.0)
                 cf        = cf_net_by_ac.get(ac, 0.0)
 
@@ -1070,7 +1141,8 @@ def asset_class_performance():
                     if ac == "C&CE":
                         cost_basis_mv += hist_cash.get(ds, 0.0)
                     ac_mv_prev[ac] = cost_basis_mv
-                    growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)
+    
+                    growth_pct = round((ac_twr_factor[ac] - 1.0) * 100, 4)  # stays 0.0 on open day
                 elif mv_before > 0:
                     denom = mv_before + cf
                     if denom > 0:
@@ -1087,6 +1159,9 @@ def asset_class_performance():
                 if holdings or growth_pct != 0.0:
                     ac_series[ac].append({"date": ds, "growth_pct": growth_pct})
 
+        today_str = today.strftime("%Y-%m-%d")
+
+        inception_str = inception.strftime("%Y-%m-%d")
         all_bdays = [d.strftime("%Y-%m-%d") for d in date_range]
 
         for ac in list(ac_series.keys()):
@@ -1094,11 +1169,16 @@ def asset_class_performance():
             if not series:
                 continue
             first_real_date = series[0]["date"]
-            padding = [{"date": d, "growth_pct": 0.0} for d in all_bdays if d < first_real_date]
+            padding = [
+                {"date": d, "growth_pct": 0.0}
+                for d in all_bdays
+                if d < first_real_date
+            ]
             if padding:
                 ac_series[ac] = padding + series
-
+        
         def sanitise(obj):
+            """Recursively replace float NaN/Inf with None for JSON safety."""
             if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
                 return None
             if isinstance(obj, dict):
@@ -1113,6 +1193,7 @@ def asset_class_performance():
         }
 
         return jsonify({"asset_class_series": sanitise(filtered_series)})
+
     except Exception as e:
         import traceback
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
@@ -1154,6 +1235,7 @@ def _run_tests():
     print("=== Running regression tests ===")
     errors = []
 
+    # TEST 1: Sortino ratio
     rf_daily   = 0.0
     returns    = [0.01, -0.02, 0.03, -0.01, 0.02]
     n          = len(returns)
@@ -1207,7 +1289,7 @@ def _run_tests():
     test_positions = [
         {"currency": "USD", "mv_usd": 3000},
         {"currency": "GBP", "mv_usd": 1000},
-        {"currency": "GBX", "mv_usd": 1000},
+        {"currency": "GBX", "mv_usd": 1000},  # should merge into GBP bucket
     ]
     test_cash = 5000.0
     test_total_val = sum(p["mv_usd"] for p in test_positions) + test_cash
@@ -1333,7 +1415,7 @@ def _run_tests():
     start_cap    = 100000.0
     cost_open    = 80000.0
     proceeds     = 0.0
-    income_total = 51290 + 8660 + 50000
+    income_total = 51290 + 8660 + 50000  # 109950
     cash_with_income = start_cap - cost_open + proceeds + income_total
     if abs(cash_with_income - 129950.0) > 0.01:
         errors.append(f"Income cash FAIL: got {cash_with_income}, expected 129950")
@@ -1394,8 +1476,8 @@ def _run_tests():
     else:
         print("  [PASS] TEST 15c: fx_key() maps GBX->GBP, others unchanged")
 
-    price_gbx = 947500.0
-    price_usd_lse = 446.05
+    price_gbx = 947500.0   # WSML.L quoted in pence — but wait, WSML is USD in the new sheet
+    price_usd_lse = 446.05  # AGGG.L quoted in USD
     gbx_base = price_gbx / 100 if is_lse_pence("GBX") else price_gbx
     usd_base = price_usd_lse / 100 if is_lse_pence("USD") else price_usd_lse
     if abs(gbx_base - 9475.0) > 0.01:
