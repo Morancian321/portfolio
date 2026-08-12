@@ -87,7 +87,7 @@ def get_sheet_data():
         nav_overrides_rows = sh.worksheet("nav_overrides").get_all_records()
     except:
         nav_overrides_rows = []
-    # FIX 13: Read dividends_coupons tab for dividend and coupon income.
+    # FIX 13: Read dividends_coupons tab for dividend income.
     try:
         income_rows = sh.worksheet("dividends_coupons").get_all_records()
     except:
@@ -113,7 +113,7 @@ def parse_income(income_rows, fx_rates):
         amount_local = float(row.get("div_income", 0) or 0)
         currency     = str(row.get("currency", "USD")).strip().upper()
         fx           = fx_rates.get(fx_key(currency), 1.0)
-        income_type  = str(row.get("asset_class", "")).strip().capitalize()  # "Dividend" or "Coupon"
+        income_type  = str(row.get("asset_class", "")).strip().capitalize()  # "Dividend"
         records.append({
             "date":         str(row.get("date", "")),
             "income_type":  income_type,
@@ -708,7 +708,6 @@ def portfolio():
         income_records   = parse_income(income_rows, fx_rates)
         total_income_usd = sum(r["cash_usd"] for r in income_records)
         dividends_usd    = sum(r["cash_usd"] for r in income_records if r["income_type"] == "Dividend")
-        coupons_usd      = sum(r["cash_usd"] for r in income_records if r["income_type"] == "Coupon")
 
         open_pos, closed = build_positions(trades, fx_rates, manual_map)
 
@@ -816,7 +815,7 @@ def portfolio():
             cce_total_disp        = conv(cce_total)
             total_income_disp     = conv(total_income_usd)
             dividends_disp        = conv(dividends_usd)
-            coupons_disp          = conv(coupons_usd)
+           
 
             for key in ["current_value", "total_pnl", "avg_gain_usd", "avg_loss_usd", "total_realised_pnl"]:
                 if key in metrics:
@@ -845,7 +844,7 @@ def portfolio():
             cce_total_disp        = round(cce_total, 2)
             total_income_disp     = round(total_income_usd, 2)
             dividends_disp        = round(dividends_usd, 2)
-            coupons_disp          = round(coupons_usd, 2)
+           
 
         return jsonify({
             "portfolio_name":           cfg["portfolio_name"],
@@ -874,7 +873,6 @@ def portfolio():
             "income_records":           income_records,
             "total_income_usd":         total_income_disp,
             "dividends_usd":            dividends_disp,
-            "coupons_usd":              coupons_disp,
         })
     except Exception as e:
         import traceback
