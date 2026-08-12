@@ -425,13 +425,13 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
             return fallback
 
     def fx_to_display(currency):
-    asset_fx = fx_rates.get(fx_key(currency), 1.0)
-    display_fx = fx_rates.get(disp, 1.0)
+        asset_fx = fx_rates.get(fx_key(currency), 1.0)
+        display_fx = fx_rates.get(disp, 1.0)
 
-    if disp != "USD" and display_fx > 0:
-        return asset_fx / display_fx
+        if disp != "USD" and display_fx > 0:
+            return asset_fx / display_fx
 
-    return asset_fx
+        return asset_fx
 
     from collections import defaultdict
     events_by_date = defaultdict(list)
