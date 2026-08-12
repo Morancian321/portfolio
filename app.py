@@ -424,6 +424,15 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
         except:
             return fallback
 
+    def fx_to_display(currency):
+    asset_fx = fx_rates.get(fx_key(currency), 1.0)
+    display_fx = fx_rates.get(disp, 1.0)
+
+    if disp != "USD" and display_fx > 0:
+        return asset_fx / display_fx
+
+    return asset_fx
+
     from collections import defaultdict
     events_by_date = defaultdict(list)
     for t in trades:
@@ -1028,12 +1037,7 @@ def asset_class_performance():
             for tk, h in holdings_dict.items():
                 ytk      = h["yf_ticker"]
                 currency = h.get("currency", "USD")
-                asset_fx  = fx_on_date(currency, dt)   # e.g. EUR→USD
-                disp_fx   = fx_on_date(disp, dt)       # e.g. EUR→USD on that day
-                if disp != "USD" and disp_fx > 0:
-                    fx_r = asset_fx / disp_fx          # net: asset_ccy → display_ccy
-                else:
-                    fx_r = asset_fx                    # disp is USD, no change needed
+                fx_r = fx_to_display(currency)
                 if ytk not in prices.columns:
                     mv += h["avg_cost_base"] * fx_r * h["qty"]
                     continue
@@ -1072,9 +1076,7 @@ def asset_class_performance():
                 holdings = ac_holdings[ac]
                 if action == "OPEN":
                     holdings[tk] = {"qty": qty, "yf_ticker": ytk, "currency": currency, "avg_cost_base": price_base}
-                    _asset_fx = fx_on_date(currency, dt)
-                    _disp_fx  = fx_on_date(disp, dt)
-                    _fx_r     = (_asset_fx / _disp_fx) if (disp != "USD" and _disp_fx > 0) else _asset_fx
+                    _fx_r = fx_to_display(currency)
                     cf_net_by_ac[ac] += price_base * _fx_r * qty
                     
                 elif action == "ADD":
@@ -1087,9 +1089,7 @@ def asset_class_performance():
                     else:
                         holdings[tk] = {"qty": qty, "yf_ticker": ytk,
                                         "currency": currency, "avg_cost_base": price_base}
-                    _asset_fx = fx_on_date(currency, dt)
-                    _disp_fx  = fx_on_date(disp, dt)
-                    _fx_r     = (_asset_fx / _disp_fx) if (disp != "USD" and _disp_fx > 0) else _asset_fx
+                    _fx_r = fx_to_display(currency)
                     cf_net_by_ac[ac] += price_base * _fx_r * qty
                         
                 elif action == "REDUCE":
@@ -1098,17 +1098,13 @@ def asset_class_performance():
                         holdings[tk]["qty"] -= reduce_qty
                         if holdings[tk]["qty"] <= 0:
                             del holdings[tk]
-                        _asset_fx = fx_on_date(currency, dt)
-                        _disp_fx  = fx_on_date(disp, dt)
-                        _fx_r     = (_asset_fx / _disp_fx) if (disp != "USD" and _disp_fx > 0) else _asset_fx                        
+                        _fx_r = fx_to_display(currency)                      
                         cf_net_by_ac[ac] -= price_base * _fx_r * reduce_qty
                         
                 elif action == "CLOSE":
                     close_qty = holdings.get(tk, {}).get("qty", qty)
                     holdings.pop(tk, None)
-                    _asset_fx = fx_on_date(currency, dt)
-                    _disp_fx  = fx_on_date(disp, dt)
-                    _fx_r     = (_asset_fx / _disp_fx) if (disp != "USD" and _disp_fx > 0) else _asset_fx                    
+                    _fx_r = fx_to_display(currency)                 
                     cf_net_by_ac[ac] -= price_base * _fx_r * close_qty
                     if not holdings:
                         ac_mv_prev[ac] = -1.0
@@ -1129,15 +1125,13 @@ def asset_class_performance():
                 is_first_day = (ac not in ac_mv_prev or ac_mv_prev.get(ac) == -1.0) and cf > 0
 
                 if is_first_day:
-                    _disp_fx_anchor = fx_on_date(disp, dt)
                     cost_basis_mv = sum(
                         h["avg_cost_base"]
-                        * (fx_on_date(h.get("currency","USD"), dt) / _disp_fx_anchor
-                           if (disp != "USD" and _disp_fx_anchor > 0)
-                           else fx_on_date(h.get("currency","USD"), dt))
+                        * fx_to_display(h.get("currency", "USD"))
                         * h["qty"]
                         for h in holdings.values()
                     ) if holdings else 0.0
+                    
                     if ac == "C&CE":
                         cost_basis_mv += hist_cash.get(ds, 0.0)
                     ac_mv_prev[ac] = cost_basis_mv
