@@ -5,8 +5,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@300..700&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+<!-- Chart.js and adapter are lazy-loaded to avoid blocking initial render -->
 <style>
 /* ── Design Tokens ──────────────────────────────────────────────────────────── */
 :root,[data-theme="light"]{
@@ -370,6 +369,25 @@ const TARGET_WEIGHTS = { IWDA: 25, AGGG: 22 };  // TODO: fill in all tickers
 const CHANGELOG = [{ date: '2026-05-08', change: 'Multi-page fund centre rebuild', commit: 'TODO' }];
 const BREACH_HISTORY = [];
 
+// ── Lazy loader + scheduler for charts (non-blocking) ───────────────────────
+window._pendingCharts = window._pendingCharts || [];
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) return resolve();
+    const s = document.createElement('script');
+    s.src = src; s.async = true; s.onload = resolve; s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+function scheduleChartBuild(fn) {
+  if (window.Chart) {
+    try { fn(); } catch (e) { console.error('Chart build error', e); }
+  } else {
+    window._pendingCharts.push(fn);
+  }
+}
+
+
 // ════════════════════════════════════════════════════════════════════════════
 // SECTION 3 - DATA LAYER
 // ════════════════════════════════════════════════════════════════════════════
@@ -377,12 +395,26 @@ window._portfolioData = null;
 window._rationaleData = null;
 
 async function fetchPortfolio() {
-  const res = await fetch(API + '/api/portfolio');
-  if (!res.ok) throw new Error('API returned ' + res.status);
-  const d = await res.json();
-  if (d.error) throw new Error(d.error);
-  window._portfolioData = d;
-  return d;
+  const CACHE_KEY = 'portfolioCacheV1';
+  // hydrate from cache immediately if present
+  try {
+    const c = localStorage.getItem(CACHE_KEY);
+    if (c) window._portfolioData = JSON.parse(c);
+  } catch (_) {}
+
+  try {
+    const res = await fetch(API + '/api/portfolio');
+    if (!res.ok) throw new Error('API returned ' + res.status);
+    const d = await res.json();
+    if (d.error) throw new Error(d.error);
+    window._portfolioData = d;
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify(d)); } catch(_) {}
+    return d;
+  } catch (e) {
+    // if network fails, return cached data if available
+    if (window._portfolioData) return window._portfolioData;
+    throw e;
+  }
 }
 
 async function fetchTradeRationale() {
@@ -899,162 +931,168 @@ function renderDashboard(root) {
   const filteredBench = filterSeriesByRange(benchSeries, currentRange);
   const c = chartDefaults();
 
-  destroyChartSafe(dashNavChart);
-  dashNavChart = null;
-  const navCtx = document.getElementById('dashNavCanvas')?.getContext('2d');
-  if (navCtx) {
-    if (filteredNav.length === 0 && filteredBench.length === 0) {
-      navCtx.canvas.parentElement.innerHTML = EmptyState('📈', 'No NAV data', 'NAV series is empty for this range.');
-    } else {
-      dashNavChart = new Chart(navCtx, {
-        type: 'line',
-        data: {
-          datasets: [
-            {
-              label: 'Portfolio',
-              data: filteredNav.map(x => ({ x: x.date, y: x.value })),
-              borderColor: '#4f98a3',
-              backgroundColor: 'rgba(79,152,163,.08)',
-              borderWidth: 2,
+  scheduleChartBuild(() => {
+    destroyChartSafe(dashNavChart);
+    dashNavChart = null;
+    const navCtx = document.getElementById('dashNavCanvas')?.getContext('2d');
+    if (navCtx) {
+      if (filteredNav.length === 0 && filteredBench.length === 0) {
+        navCtx.canvas.parentElement.innerHTML = EmptyState('📈', 'No NAV data', 'NAV series is empty for this range.');
+      } else {
+        dashNavChart = new Chart(navCtx, {
+          type: 'line',
+          data: {
+            datasets: [
+              {
+                label: 'Portfolio',
+                data: filteredNav.map(x => ({ x: x.date, y: x.value })),
+                borderColor: '#4f98a3',
+                backgroundColor: 'rgba(79,152,163,.08)',
+                borderWidth: 2,
+                pointRadius: 0,
+                fill: true,
+                tension: .3
+              },
+              {
+                label: '50:50 Benchmark',
+                data: filteredBench.map(x => ({ x: x.date, y: x.value })),
+                borderColor: '#d29922',
+                borderWidth: 1.5,
+                borderDash: [4,3],
+                pointRadius: 0,
+                fill: false,
+                tension: .3
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode:'index', intersect:false },
+            plugins: {
+              legend: { labels:{ color:c.text, font:{ size:11 }, boxWidth:24, padding:16 } },
+              tooltip: {
+                backgroundColor: c.tooltip_bg,
+                borderColor: c.tooltip_border,
+                borderWidth: 1,
+                titleColor: c.text,
+                bodyColor: c.text,
+                callbacks: {
+                  label: ctx => ' ' + ctx.dataset.label + ': €' + Number(ctx.parsed.y).toLocaleString('en-US',{ minimumFractionDigits:2, maximumFractionDigits:2 })
+                }
+              }
+            },
+            scales: {
+              x: { type:'time', time:{ unit:'month' }, grid:{ color:c.grid }, ticks:{ color:c.text, font:{ size:11 } } },
+              y: { grid:{ color:c.grid }, ticks:{ color:c.text, font:{ size:11 }, callback: v => '€' + Number(v).toLocaleString('en-US',{ maximumFractionDigits:0 }) } }
+            }
+          }
+        });
+      }
+    }
+  });
+
+  // ── Allocation Doughnut ───────────────────────────────────────────────────
+  scheduleChartBuild(() => {
+    destroyChartSafe(dashAllocChart);
+    dashAllocChart = null;
+    const allocCtx = document.getElementById('dashAllocCanvas')?.getContext('2d');
+    if (allocCtx) {
+      const allocLabels = Object.keys(allocation || {});
+      const allocVals   = Object.values(allocation || {});
+      if (!allocLabels.length) {
+        allocCtx.canvas.parentElement.innerHTML = EmptyState('🥧', 'No allocation data', 'Allocation data is not available.');
+      } else {
+        dashAllocChart = new Chart(allocCtx, {
+          type: 'doughnut',
+          data: {
+            labels: allocLabels,
+            datasets: [{
+              data: allocVals,
+              backgroundColor: allocPalette(allocLabels.length),
+              borderWidth: 0,
+              borderColor: document.documentElement.getAttribute('data-theme') === 'dark' ? '#161b22' : '#f9f8f5'
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            cutout: '62%',
+            plugins: {
+              legend: { position:'bottom', labels:{ color:c.text, font:{ size:11 }, padding:12, boxWidth:12 } },
+              tooltip: {
+                backgroundColor: c.tooltip_bg,
+                borderColor: c.tooltip_border,
+                borderWidth: 1,
+                titleColor: c.text,
+                bodyColor: c.text,
+                callbacks: { label: ctx => ' ' + ctx.label + ': ' + Number(ctx.parsed).toFixed(1) + '%' }
+              }
+            }
+          }
+        });
+      }
+    }
+  });
+
+  // ── Drawdown Band Chart ───────────────────────────────────────────────────
+  scheduleChartBuild(() => {
+    destroyChartSafe(dashBandChart);
+    dashBandChart = null;
+    const bandCtx = document.getElementById('dashBandCanvas')?.getContext('2d');
+    if (bandCtx) {
+      const ddSeries = computeDrawdownSeries(filterSeriesByRange(navSeries, currentRange));
+      if (!ddSeries.length) {
+        bandCtx.canvas.parentElement.innerHTML = EmptyState('📉', 'No drawdown data', 'Insufficient NAV data for this range.');
+      } else {
+        dashBandChart = new Chart(bandCtx, {
+          type: 'line',
+          data: {
+            datasets: [{
+              label: 'Drawdown %',
+              data: ddSeries.map(x => ({ x: x.date, y: -x.drawdown_pct })),
+              borderColor: '#f85149',
+              backgroundColor: 'rgba(248,81,73,.10)',
+              borderWidth: 1.5,
               pointRadius: 0,
               fill: true,
               tension: .3
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode:'index', intersect:false },
+            plugins: {
+              legend: { labels:{ color:c.text, font:{ size:11 }, boxWidth:24, padding:16 } },
+              tooltip: {
+                backgroundColor: c.tooltip_bg,
+                borderColor: c.tooltip_border,
+                borderWidth: 1,
+                titleColor: c.text,
+                bodyColor: c.text,
+                callbacks: { label: ctx => ' Drawdown: ' + Number(ctx.parsed.y).toFixed(2) + '%' }
+              }
             },
-            {
-              label: '50:50 Benchmark',
-              data: filteredBench.map(x => ({ x: x.date, y: x.value })),
-              borderColor: '#d29922',
-              borderWidth: 1.5,
-              borderDash: [4,3],
-              pointRadius: 0,
-              fill: false,
-              tension: .3
-            }
-          ]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          interaction: { mode:'index', intersect:false },
-          plugins: {
-            legend: { labels:{ color:c.text, font:{ size:11 }, boxWidth:24, padding:16 } },
-            tooltip: {
-              backgroundColor: c.tooltip_bg,
-              borderColor: c.tooltip_border,
-              borderWidth: 1,
-              titleColor: c.text,
-              bodyColor: c.text,
-              callbacks: {
-                label: ctx => ' ' + ctx.dataset.label + ': €' + Number(ctx.parsed.y).toLocaleString('en-US',{ minimumFractionDigits:2, maximumFractionDigits:2 })
+            scales: {
+              x: { type:'time', time:{ unit:'month' }, grid:{ color:c.grid }, ticks:{ color:c.text, font:{ size:11 } } },
+              y: {
+                grid:{ color:c.grid },
+                ticks:{ color:c.text, font:{ size:11 }, callback: v => v.toFixed(1) + '%' },
+                max: 0
               }
             }
-          },
-          scales: {
-            x: { type:'time', time:{ unit:'month' }, grid:{ color:c.grid }, ticks:{ color:c.text, font:{ size:11 } } },
-            y: { grid:{ color:c.grid }, ticks:{ color:c.text, font:{ size:11 }, callback: v => '€' + Number(v).toLocaleString('en-US',{ maximumFractionDigits:0 }) } }
           }
-        }
-      });
+        });
+      }
     }
-  }
-
-  // ── Allocation Doughnut ───────────────────────────────────────────────────
-  destroyChartSafe(dashAllocChart);
-  dashAllocChart = null;
-  const allocCtx = document.getElementById('dashAllocCanvas')?.getContext('2d');
-  if (allocCtx) {
-    const allocLabels = Object.keys(allocation || {});
-    const allocVals   = Object.values(allocation || {});
-    if (!allocLabels.length) {
-      allocCtx.canvas.parentElement.innerHTML = EmptyState('🥧', 'No allocation data', 'Allocation data is not available.');
-    } else {
-      dashAllocChart = new Chart(allocCtx, {
-        type: 'doughnut',
-        data: {
-          labels: allocLabels,
-          datasets: [{
-            data: allocVals,
-            backgroundColor: allocPalette(allocLabels.length),
-            borderWidth: 0,
-            borderColor: document.documentElement.getAttribute('data-theme') === 'dark' ? '#161b22' : '#f9f8f5'
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          cutout: '62%',
-          plugins: {
-            legend: { position:'bottom', labels:{ color:c.text, font:{ size:11 }, padding:12, boxWidth:12 } },
-            tooltip: {
-              backgroundColor: c.tooltip_bg,
-              borderColor: c.tooltip_border,
-              borderWidth: 1,
-              titleColor: c.text,
-              bodyColor: c.text,
-              callbacks: { label: ctx => ' ' + ctx.label + ': ' + Number(ctx.parsed).toFixed(1) + '%' }
-            }
-          }
-        }
-      });
-    }
-  }
-
-  // ── Drawdown Band Chart ───────────────────────────────────────────────────
-  destroyChartSafe(dashBandChart);
-  dashBandChart = null;
-  const bandCtx = document.getElementById('dashBandCanvas')?.getContext('2d');
-  if (bandCtx) {
-    const ddSeries = computeDrawdownSeries(filterSeriesByRange(navSeries, currentRange));
-    if (!ddSeries.length) {
-      bandCtx.canvas.parentElement.innerHTML = EmptyState('📉', 'No drawdown data', 'Insufficient NAV data for this range.');
-    } else {
-      dashBandChart = new Chart(bandCtx, {
-        type: 'line',
-        data: {
-          datasets: [{
-            label: 'Drawdown %',
-            data: ddSeries.map(x => ({ x: x.date, y: -x.drawdown_pct })),
-            borderColor: '#f85149',
-            backgroundColor: 'rgba(248,81,73,.10)',
-            borderWidth: 1.5,
-            pointRadius: 0,
-            fill: true,
-            tension: .3
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          interaction: { mode:'index', intersect:false },
-          plugins: {
-            legend: { labels:{ color:c.text, font:{ size:11 }, boxWidth:24, padding:16 } },
-            tooltip: {
-              backgroundColor: c.tooltip_bg,
-              borderColor: c.tooltip_border,
-              borderWidth: 1,
-              titleColor: c.text,
-              bodyColor: c.text,
-              callbacks: { label: ctx => ' Drawdown: ' + Number(ctx.parsed.y).toFixed(2) + '%' }
-            }
-          },
-          scales: {
-            x: { type:'time', time:{ unit:'month' }, grid:{ color:c.grid }, ticks:{ color:c.text, font:{ size:11 } } },
-            y: {
-              grid:{ color:c.grid },
-              ticks:{ color:c.text, font:{ size:11 }, callback: v => v.toFixed(1) + '%' },
-              max: 0
-            }
-          }
-        }
-      });
-    }
-  }
+  });
 
   // ── Open Positions Table ─────────────────────────────────────────────────────
   applyDashPosFilters();
 
   // ── Asset Class Performance Chart (moved from Positions) ───────────────────
-  (function buildAcPerfChart() {
+  scheduleChartBuild(function buildAcPerfChart() {
     const acData  = getAcPerfData();
     const heldClasses = new Set(
       getOpenPositions()
@@ -1199,7 +1237,7 @@ function renderDashboard(root) {
       });
       acPerfChart.update();
     };
-  })();
+  });
 
   // Closed Trades moved to Positions view
 }
@@ -1407,6 +1445,14 @@ async function init() {
     const path = (window.location.hash || '#/overview').replace('#','');
     updateActiveNav(path);
     handler(document.getElementById('appRoot'), param);
+    // Load Chart.js in background (non-blocking) and run any queued chart builds
+    loadScript('https://cdn.jsdelivr.net/npm/chart.js')
+      .then(() => loadScript('https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns'))
+      .then(() => {
+        (window._pendingCharts || []).forEach(fn => { try { fn(); } catch (e) { console.error(e); } });
+        window._pendingCharts = [];
+      })
+      .catch(err => console.warn('Chart.js failed to load:', err));
   } catch(e) {
     document.getElementById('loadingScreen').classList.add('hidden');
     const b = document.getElementById('errorBanner');
