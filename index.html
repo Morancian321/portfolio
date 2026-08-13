@@ -393,7 +393,6 @@ const getOpenPositions   = () => window._portfolioData?.open_positions || [];
 const getClosedTrades    = () => window._portfolioData?.closed_trades || [];
 const getAllocation       = () => window._portfolioData?.allocation || {};
 const getFxExposure      = () => window._portfolioData?.fx_exposure || {};
-const getSizingPolicy    = () => window._portfolioData?.position_sizing_policy || {};
 const getBenchmarkMetrics= () => window._portfolioData?.benchmark_metrics || {};
 // C&CE sleeve getters
 const getCCEPositions    = () => window._portfolioData?.cce_positions || [];
@@ -637,7 +636,7 @@ function setDashRange(range) {
 }
 
 // Dashboard positions filter state
-window._dashPosFilters = window._dashPosFilters || { assetClass: 'All Classes', band: 'All Bands', breachOnly: false };
+window._dashPosFilters = window._dashPosFilters || { assetClass: 'All Classes' };
 
 function applyDashPosFilters() {
   const wrap = document.getElementById('dashPosTableWrap');
@@ -647,9 +646,7 @@ function applyDashPosFilters() {
   // Exclude C&CE positions from the main open positions table
   let rows = allPositions.filter(p => p.asset_class !== 'C&CE');
   if (f.assetClass !== 'All Classes') rows = rows.filter(r => r.asset_class === f.assetClass);
-  if (f.band !== 'All Bands') rows = rows.filter(r => r.sizing_band === f.band);
-  if (f.breachOnly) rows = rows.filter(r => r.sizing_breach);
-
+ 
   const filtersActive = f.assetClass !== 'All Classes' || f.band !== 'All Bands' || f.breachOnly;
 
   const posColumns = _buildPosColumns();
@@ -712,18 +709,6 @@ function _buildPosColumns() {
     {
       key: 'weight_pct', label: 'Weight %',
       render: val => fmtPctRaw(val)
-    },
-    {
-      key: 'sizing_band', label: 'Sizing Band',
-      render: val => Badge(val, {Core:'success',Satellite:'blue',Opportunistic:'default',Speculative:'purple',Unclassified:'warning'}[val] || 'default')
-    },
-    {
-      key: 'sizing_breach', label: 'Band Status',
-      render: val => Badge(val ? 'Breach' : 'Within limits', val ? 'warning' : 'success')
-    },
-    {
-      key: 'flags', label: 'Flags',
-      render: val => val && val.length ? val.map(f => FlagBadge(f)).join(' ') : '<span style="color:var(--color-text-faint)">-<\/span>'
     },
     {
       key: 'open_date', label: 'Open Date'
@@ -1120,15 +1105,7 @@ function renderPositions(root) {
           </select>
           <select id="dashPosBandFilter" class="dash-pos-filter-select"
            
-    onchange="window._dashPosFilters.band=this.value;applyDashPosFilters()">
-            <option value="All Bands">All Bands</option>
-            ${BANDS.map(b => `<option value="${b}"${window._dashPosFilters.band===b?' selected':''}>${b}<\/option>`).join('')}
-         </select>
-         <button id="dashPosBreachToggle"
-                 class="btn ${window._dashPosFilters.breachOnly ? 'btn-primary' : 'btn-outline'}"
             
-    onclick="window._dashPosFilters.breachOnly=!window._dashPosFilters.breachOnly;this.className='btn '+(window._dashPosFilters.breachOnly?'btn-primary':'btn-outline');applyDashPosFilters()">
-            Breaches Only
           </button>
         </div>
       </div>
