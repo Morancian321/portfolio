@@ -1223,7 +1223,7 @@ function renderPositions(root) {
         .map(p => p.asset_class)
         .filter(Boolean)
     );
-    const AC_ORDER = ['Equity','Fixed Income','Infrastructure','Commodity','Energy/Utilities','C&CE'];
+    const AC_ORDER = ['Core Equity','Fixed Income','Infrastructure','Commodity','Energy/Utilities','C&CE'];
     const classes = AC_ORDER.filter(ac =>
       acData[ac]?.length > 0
     );
