@@ -14,12 +14,6 @@ CORS(app)
 SHEET_ID = os.environ.get("SHEET_ID", "1RwIupOHnln5if-hzCE-bQPfT_TW7N1_sTZcPDMelb5g")
 CREDS_FILE = os.environ.get("GOOGLE_CREDENTIALS_FILE", "credentials.json")
 
-SIZING_POLICY = {
-    "Core":          {"tickers": ["IWDA", "AGGH"],                  "min_pct": 20, "max_pct": 30},
-    "Satellite":     {"tickers": ["INFR", "BRIJ", "GILG", "IGLN"], "min_pct": 5,  "max_pct": 12},
-    "Opportunistic": {"tickers": ["EEM", "LUTI", "WSML"],                   "min_pct": 2,  "max_pct": 7},
-    "Speculative":   {"tickers": ["BTCUSD", "BTC-USD", "COIN"],     "min_pct": 0,  "max_pct": 2},
-}
 ACTION_ORDER = {"CLOSE": 0, "REDUCE": 1, "ADD": 2, "OPEN": 3}
 
 def get_currency(trade_row_or_ticker, yf_ticker=None):
@@ -727,26 +721,6 @@ def portfolio():
             asset_class = p["asset_class"]
             weight_pct  = p["weight_pct"]
 
-            flags = []
-            if ticker == "COIN":                            flags.append("EXIT_REVIEW")
-            if ticker in ["BTCUSD", "BTC-USD"]:             flags.append("WATCH_60D")
-            if ticker == "EEM" and weight_pct > 7:          flags.append("OVERWEIGHT")
-            if ticker == "GILG" and weight_pct < 5:         flags.append("UNDERWEIGHT")
-            if ticker == "IGLN":                            flags.append("CONVICTION_HOLD")
-            if ticker == "WSML":                            flags.append("TRIM_CANDIDATE")
-            if ticker in ["IWDA", "AGGG"]:                  flags.append("CORE")
-            if ticker in ["INFR", "BRIJ", "GILG", "IGLN"]:  flags.append("SATELLITE")
-            if ticker in ["EEM", "LUTI", "WSML"]:           flags.append("OPPORTUNISTIC")
-            p["flags"] = flags
-
-            for band, policy in SIZING_POLICY.items():
-                if ticker in policy["tickers"]:
-                    p["sizing_band"]   = band
-                    p["sizing_breach"] = not (policy["min_pct"] <= weight_pct <= policy["max_pct"])
-                    break
-            else:
-                p["sizing_band"]   = "Unclassified"
-                p["sizing_breach"] = False
 
         alloc = {}
         for p in open_pos:
@@ -867,7 +841,6 @@ def portfolio():
             "benchmark_series":         bench_series,
             "fx_rates":                 fx_rates,
             "fx_exposure":              fx_exposure,
-            "position_sizing_policy":   SIZING_POLICY,
             "display_currency":         disp,
             "usd_to_display":           round(usd_to_disp, 6),
             "income_records":           income_records,
