@@ -647,7 +647,7 @@ function applyDashPosFilters() {
   let rows = allPositions.filter(p => p.asset_class !== 'C&CE');
   if (f.assetClass !== 'All Classes') rows = rows.filter(r => r.asset_class === f.assetClass);
  
-  const filtersActive = f.assetClass !== 'All Classes' || f.band !== 'All Bands' || f.breachOnly;
+  const filtersActive = f.assetClass !== 'All Classes';
 
   const posColumns = _buildPosColumns();
   const posOptions = {
@@ -1075,7 +1075,6 @@ function renderPositions(root) {
   const allOpenPos    = getOpenPositions();
   const uniqueClasses = [...new Set(
     allOpenPos.filter(p => p.asset_class !== 'C&CE').map(p => p.asset_class).filter(Boolean))].sort();
-  const BANDS = ['Core','Satellite','Opportunistic','Speculative','Unclassified'];
   
   root.innerHTML = `
     ${SectionHeader('Positions', 'Open positions &amp; cash sleeve')}
@@ -1103,10 +1102,6 @@ function renderPositions(root) {
             <option value="All Classes">All Classes</option>
             ${uniqueClasses.map(c => `<option value="${c}"${window._dashPosFilters.assetClass===c?' selected':''}>${c}<\/option>`).join('')}
           </select>
-          <select id="dashPosBandFilter" class="dash-pos-filter-select"
-           
-            
-          </button>
         </div>
       </div>
       <div id="dashPosTableWrap"></div>
