@@ -879,12 +879,7 @@ function renderDashboard(root) {
     </div>
 
     <!-- Closed Trades Table -->
-    <div class="table-card section-gap">
-      <div class="table-header">
-        <h2>Closed Trades</h2>
-      </div>
-      <div id="dashClosedTableWrap"></div>
-    </div>
+    <!-- Closed Trades Table (moved to Positions) -->
   `;
 
   // ── NAV Chart ─────────────────────────────────────────────────────────────
@@ -1046,31 +1041,7 @@ function renderDashboard(root) {
   // ── Open Positions Table ─────────────────────────────────────────────────────
   applyDashPosFilters();
 
-  // ── Closed Trades Table ───────────────────────────────────────────────────
-  const closedWrap = document.getElementById('dashClosedTableWrap');
-  if (closedWrap) {
-    const closedRows = [...getClosedTrades()].sort((a, b) => new Date(b.date) - new Date(a.date));
-    const closedColumns = [
-      { key: 'date', label: 'Date', render: val => val || '-' },
-      {
-        key: 'name', label: 'Name / Ticker',
-        render: (val, row) => `<strong>${val}<\/strong><br><span style="font-size:.7rem;color:var(--color-text-muted)">${row.ticker}<\/span>`
-      },
-      { key: 'asset_class', label: 'Class', render: val => `<span class="badge ${badgeAssetClass(val)}">${val || '-'}<\/span>` },
-      { key: 'qty', label: 'Qty', render: val => Number(val).toFixed(0) },
-      { key: 'entry_price', label: 'Entry Price', render: val => val != null ? Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}) : '-' },
-      { key: 'exit_price', label: 'Exit Price', render: val => val != null ? Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}) : '-' },
-      { key: 'realised_pnl_usd', label: 'Realised P&L', render: val => `<span class="${val >= 0 ? 'up' : 'down'}">${fmt(val, 0)}<\/span>` },
-      { key: 'entry_price', label: 'Return %', render: (val, row) => val && row.exit_price ? fmtPct(((row.exit_price - val) / val) * 100) : '-' }
-    ];
-    const closedOptions = {
-      rowClass: row => row.realised_pnl_usd > 0 ? 'row-profit' : row.realised_pnl_usd < 0 ? 'row-loss' : '',
-      emptyMessage: 'Closed trade history will appear here once trades are completed.'
-    };
-    closedWrap.innerHTML = closedRows.length === 0
-      ? EmptyState('📭', 'No closed trades', 'Closed trade history will appear here once trades are completed.')
-      : DataTable(closedColumns, closedRows, closedOptions);
-  }
+  // Closed Trades moved to Positions view
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1169,6 +1140,14 @@ function renderPositions(root) {
       </div>
       <div id="posIncomeTableWrap"></div>
     </div>
+
+    <!-- Closed Trades Table -->
+    <div class="table-card section-gap">
+      <div class="table-header">
+        <h2>Closed Trades</h2>
+      </div>
+      <div id="posClosedTableWrap"></div>
+    </div>
   `;
 
   // ── C&CE Table ────────────────────────────────────────────────────────────
@@ -1229,6 +1208,29 @@ function renderPositions(root) {
       : DataTable(incomeCols, incomeRecords, {
           emptyMessage: 'No income records to display.'
         });
+  }
+
+  // ── Closed Trades Table (Positions) ───────────────────────────────────────
+  const posClosedWrap = document.getElementById('posClosedTableWrap');
+  if (posClosedWrap) {
+    const closedRows = [...getClosedTrades()].sort((a, b) => new Date(b.date) - new Date(a.date));
+    const closedColumns = [
+      { key: 'date', label: 'Date', render: val => val || '-' },
+      { key: 'name', label: 'Name / Ticker', render: (val, row) => `<strong>${val}<\/strong><br><span style="font-size:.7rem;color:var(--color-text-muted)">${row.ticker}<\/span>` },
+      { key: 'asset_class', label: 'Class', render: val => `<span class="badge ${badgeAssetClass(val)}">${val || '-'}<\/span>` },
+      { key: 'qty', label: 'Qty', render: val => Number(val).toFixed(0) },
+      { key: 'entry_price', label: 'Entry Price', render: val => val != null ? Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}) : '-' },
+      { key: 'exit_price', label: 'Exit Price', render: val => val != null ? Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}) : '-' },
+      { key: 'realised_pnl_usd', label: 'Realised P&L', render: val => `<span class="${val >= 0 ? 'up' : 'down'}">${fmt(val, 0)}<\/span>` },
+      { key: 'entry_price', label: 'Return %', render: (val, row) => val && row.exit_price ? fmtPct(((row.exit_price - val) / val) * 100) : '-' }
+    ];
+    const closedOptions = {
+      rowClass: row => row.realised_pnl_usd > 0 ? 'row-profit' : row.realised_pnl_usd < 0 ? 'row-loss' : '',
+      emptyMessage: 'Closed trade history will appear here once trades are completed.'
+    };
+    posClosedWrap.innerHTML = closedRows.length === 0
+      ? EmptyState('📭', 'No closed trades', 'Closed trade history will appear here once trades are completed.')
+      : DataTable(closedColumns, closedRows, closedOptions);
   }
   applyDashPosFilters();
 
