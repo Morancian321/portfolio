@@ -4,7 +4,7 @@
 <title>Cian Moran - Demo Investment Portfolio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300..700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@300..700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
 <style>
@@ -18,7 +18,7 @@
   --color-gold:#d19900;--color-blue:#006494;--color-purple:#7a39bb;
   --color-orange:#da7101;
   --shadow-sm:0 1px 3px rgba(0,0,0,.06);--shadow-md:0 4px 12px rgba(0,0,0,.08);
-  --font-body:'Inter',sans-serif;--font-display:'Instrument Serif',Georgia,serif;
+  --font-body:'Source Sans 3',sans-serif;--font-display:'Source Sans 3',sans-serif;
   --radius-md:0;--radius-lg:0;--radius-xl:0;
 }
 [data-theme="dark"]{
@@ -404,6 +404,7 @@ const getCCETotal        = () => window._portfolioData?.cce_total || 0;
 const getIncomeRecords   = () => window._portfolioData?.income_records || [];
 const getTotalIncome     = () => window._portfolioData?.total_income_usd || 0;
 const getDividendsUsd    = () => window._portfolioData?.dividends_usd || 0;
+const getCouponsUsd      = () => window._portfolioData?.coupons_usd || 0;
 
 // ════════════════════════════════════════════════════════════════════════════
 // SECTION 4 - DERIVED METRICS
@@ -778,9 +779,10 @@ function renderDashboard(root) {
   const navTotal     = summary.current_value || 1;
   const totalIncome  = getTotalIncome();
   const divIncome    = getDividendsUsd();
+  const couponIncome = getCouponsUsd();
   const incomeSubtitle = totalIncome > 0
     ? fmtPctRaw(navTotal > 0 ? (cceTotal / navTotal * 100) : 0)
-      + ' of NAV · ' + fmt(divIncome, 0) + ' div '
+      + ' of NAV · ' + fmt(divIncome, 0) + ' div · ' + fmt(couponIncome, 0) + ' coupon'
     : fmtPctRaw(navTotal > 0 ? (cceTotal / navTotal * 100) : 0) + ' of NAV';
 
   // ── Build HTML ────────────────────────────────────────────────────────────
@@ -1089,6 +1091,7 @@ function renderPositions(root) {
   const incomeRecords  = [...getIncomeRecords()].sort((a, b) => new Date(b.date) - new Date(a.date));
   const totalIncome    = getTotalIncome();
   const divIncome      = getDividendsUsd();
+  const couponIncome   = getCouponsUsd();
   const allOpenPos    = getOpenPositions();
   const uniqueClasses = [...new Set(
     allOpenPos.filter(p => p.asset_class !== 'C&CE').map(p => p.asset_class).filter(Boolean))].sort();
@@ -1101,7 +1104,7 @@ function renderPositions(root) {
     <div class="chart-card section-gap" id="acPerfCard">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:1.25rem;flex-wrap:wrap;gap:.75rem">
         <div>
-          <div class="chart-title" style="margin-bottom:.25rem">Asset Class Historical Performance </div>
+          <div class="chart-title" style="margin-bottom:.25rem">Asset Class Historical Performance *BETA: Calculation logic needs refinement</div>
           <div style="font-size:.75rem;color:var(--color-text-muted)">Growth % from cost basis · adjusts for entries, exits &amp; rebalances</div>
         </div>
         <div id="acPerfBtns" style="display:flex;gap:.4rem;flex-wrap:wrap"></div>
@@ -1173,6 +1176,10 @@ function renderPositions(root) {
             <span class="cce-stat-label">Dividends</span>
             <span class="cce-stat-value">${fmt(divIncome, 0)}</span>
           </div>
+          <div class="cce-stat">
+            <span class="cce-stat-label">Coupons</span>
+            <span class="cce-stat-value">${fmt(couponIncome, 0)}</span>
+          </div>
           <div style="width:1px;height:2rem;background:var(--color-divider)"></div>
           <div class="cce-stat">
             <span class="cce-stat-label">Total Income</span>
@@ -1238,7 +1245,7 @@ function renderPositions(root) {
     ];
     incomeWrap.innerHTML = !incomeRecords.length
       ? EmptyState('💰', 'No income recorded',
-          'Dividend payments logged in the dividends_coupons sheet will appear here.')
+          'Dividend and coupon payments logged in the dividends_coupons sheet will appear here.')
       : DataTable(incomeCols, incomeRecords, {
           emptyMessage: 'No income records to display.'
         });
