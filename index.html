@@ -318,7 +318,7 @@ tr.row-loss td:last-child{color:var(--color-error)}
 
 <footer>
   <div class="container footer-inner">
-    <span class="footer-note">Demo portfolio - not financial advice. Web-app is proprietary, all features have been introduced by myself. Data is sourced from a trade log + yfinance (live price database). ~ Founder/Developer: Cian Moran</span>
+    <span class="footer-note">Demo portfolio - not financial advice. Data sourced from Google Sheets + yfinance.</span>
     <span class="footer-note" id="lastUpdated"></span>
   </div>
 </footer>
@@ -833,13 +833,7 @@ function renderDashboard(root) {
         { text: fmtPct(summary.simple_total_return_pct), cls: pnlPos ? 'up' : 'down' },
         pnlPos ? 'success' : 'danger'
       )}
-      ${MetricCard(
-        'Realised P&amp;L',
-        fmt(metrics.total_realised_pnl, 0),
-        '',
-        null,
-        (metrics.total_realised_pnl || 0) >= 0 ? 'success' : 'danger'
-      )}
+      
       ${MetricCard(
         'Open Positions',
         allOpenPos.filter(p => p.asset_class !== 'C&CE').length
