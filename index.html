@@ -133,7 +133,18 @@ nav.main-nav a:hover,nav.main-nav a.active{color:var(--color-text);background:co
 .range-pill{font-size:.75rem;font-weight:600;padding:.35rem .875rem;border-radius:9999px;border:1px solid var(--color-border);color:var(--color-text-muted);cursor:pointer;transition:all .18s;background:none}
 .range-pill.active{background:var(--color-primary);color:#fff;border-color:var(--color-primary)}
 
-
+.bug-warning-banner{
+  width:100%;
+  box-sizing:border-box;
+  padding:10px 16px;
+  background: rgba(214, 194, 97, 0.37);
+  border-bottom:0px solid #e6c85c;
+  color:rgba(255, 255, 255, 1);
+  font-size:12px;
+  font-weight:600;
+  letter-spacing:.02em;
+  text-align:center;
+}
 /* Section header */
 .section-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:1.5rem;gap:1rem}
 .section-header-left h2{font-family:var(--font-display);font-size:1.5rem;font-weight:400}
@@ -292,6 +303,11 @@ tr.row-loss td:last-child{color:var(--color-error)}
     <a href="#/positions">Positions</a>
   </nav>
 </header>
+
+<div class="bug-warning-banner" role="alert">
+  TEMPORARY BUG WARNING: IF C&amp;CE VALUE IS ~8% OF NAV, PLEASE REFRESH.
+  IT WILL CORRECT TO ~4% OF NAV.
+</div>
 
 <main>
   <div class="container">
