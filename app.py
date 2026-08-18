@@ -199,14 +199,33 @@ def get_risk_free_rate():
     return 0.024
 
 def get_live_price(yf_ticker, manual_map):
+    # Controlled manual override has priority.
     if yf_ticker in manual_map:
-        return float(manual_map[yf_ticker])
+        try:
+            price = float(manual_map[yf_ticker])
+            if math.isfinite(price) and price > 0:
+                return price
+        except (TypeError, ValueError):
+            pass
+
     try:
-        h = yf.Ticker(yf_ticker).history(period="2d")
-        if not h.empty:
-            return float(h["Close"].iloc[-1])
-    except:
+        h = yf.Ticker(yf_ticker).history(
+            period="5d",
+            interval="1d",
+            auto_adjust=False,
+        )
+
+        if not h.empty and "Close" in h.columns:
+            closes = h["Close"].dropna()
+
+            if not closes.empty:
+                price = float(closes.iloc[-1])
+
+                if math.isfinite(price) and price > 0:
+                    return price
+    except Exception:
         pass
+
     return None
 
 def build_positions(trades, fx_rates, manual_map):
@@ -352,7 +371,7 @@ def build_positions(trades, fx_rates, manual_map):
                 "direction":   direction,
                 "quantity":    qty_held,
                 "avg_price":   round(ap, 4),
-                "live_price":  round(lp, 4) if live_price else None,
+                "live_price": round(live_price, 4) if live_price is not None else None,
                 "currency":    currency,
                 "mv_usd":      round(mv_usd, 2),
                 "cost_usd":    round(cost_usd, 2),
