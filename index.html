@@ -396,23 +396,44 @@ window._rationaleData = null;
 
 async function fetchPortfolio() {
   const CACHE_KEY = 'portfolioCacheV1';
-  // hydrate from cache immediately if present
-  try {
-    const c = localStorage.getItem(CACHE_KEY);
-    if (c) window._portfolioData = JSON.parse(c);
-  } catch (_) {}
 
   try {
-    const res = await fetch(API + '/api/portfolio');
-    if (!res.ok) throw new Error('API returned ' + res.status);
+    const res = await fetch(API + '/api/portfolio', {
+      cache: 'no-store'
+    });
+
+    if (!res.ok) {
+      throw new Error('API returned ' + res.status);
+    }
+
     const d = await res.json();
-    if (d.error) throw new Error(d.error);
+
+    if (d.error) {
+      throw new Error(d.error);
+    }
+
     window._portfolioData = d;
-    try { localStorage.setItem(CACHE_KEY, JSON.stringify(d)); } catch(_) {}
+
+    try {
+      localStorage.setItem(CACHE_KEY, JSON.stringify(d));
+    } catch (_) {}
+
     return d;
   } catch (e) {
-    // if network fails, return cached data if available
-    if (window._portfolioData) return window._portfolioData;
+    // Use cached data only if the live API request fails
+    try {
+      const cached = localStorage.getItem(CACHE_KEY);
+
+      if (cached) {
+        const d = JSON.parse(cached);
+        window._portfolioData = d;
+
+        console.warn('Using cached portfolio data because the live request failed:', e);
+
+        return d;
+      }
+    } catch (_) {}
+
     throw e;
   }
 }
