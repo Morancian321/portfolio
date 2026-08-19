@@ -243,9 +243,10 @@ def build_positions(trades, fx_rates, manual_map):
                 currency    = e_currency
 
             elif action == "REDUCE":
+                reduce_qty = min(qty, qty_held)
                 avg        = cost_basis / qty_held if qty_held else price
-                cost_basis -= avg * qty
-                qty_held   -= qty
+                cost_basis -= avg * reduce_qty
+                qty_held   -= reduce_qty
 
                 fx           = fx_rates.get(fx_key(e_currency), 1.0)
                 # FIX 15: pence divide only for GBX; USD/GBP/EUR .L tickers use price as-is.
@@ -259,13 +260,13 @@ def build_positions(trades, fx_rates, manual_map):
                 avg_usd   = avg_base * fx
                 price_usd = price_base * fx
 
-                realised_usd  = (price_usd - avg_usd) * qty
-                cost_usd_sold = avg_usd * qty
+                realised_usd  = (price_usd - avg_usd) * reduce_qty
+                cost_usd_sold = avg_usd * reduce_qty
 
                 closed_trades.append({
                     "ticker":           ticker,
                     "name":             name,
-                    "qty":              qty,
+                    "qty":              reduce_qty,
                     "entry_price":      round(avg_base, 4),
                     "exit_price":       round(price_base, 4),
                     "realised_pnl_usd": round(realised_usd, 2),
@@ -708,7 +709,10 @@ def portfolio():
         total_mv   = sum(p["mv_usd"] for p in open_pos)
         total_cost = sum(p["cost_usd"] for p in open_pos)
 
-        proceeds_total = sum(t.get("realised_pnl_usd", 0) for t in closed)
+        proceeds_total = sum(
+            t.get("cost_usd_sold", 0) + t.get("realised_pnl_usd", 0)
+            for t in closed
+        )
         cash = cfg["starting_capital"] - total_cost + proceeds_total + total_income_usd
         cash = max(cash, 0)
         total_val = total_mv + cash
