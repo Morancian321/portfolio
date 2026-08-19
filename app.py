@@ -16,16 +16,6 @@ CREDS_FILE = os.environ.get("GOOGLE_CREDENTIALS_FILE", "credentials.json")
 
 ACTION_ORDER = {"CLOSE": 0, "REDUCE": 1, "ADD": 2, "OPEN": 3}
 
-def sanitise(obj):
-    """Recursively replace float NaN/Inf with None for JSON safety."""
-    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
-        return None
-    if isinstance(obj, dict):
-        return {k: sanitise(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [sanitise(v) for v in obj]
-    return obj
-    
 def get_currency(trade_row_or_ticker, yf_ticker=None):
     # Called with (trade_row dict, yf_ticker) — new path
     if isinstance(trade_row_or_ticker, dict):
@@ -830,7 +820,7 @@ def portfolio():
             dividends_disp        = round(dividends_usd, 2)
            
 
-        return jsonify(sanitise({
+        return jsonify({
             "portfolio_name":           cfg["portfolio_name"],
             "inception_date":           cfg["inception_date"],
             "benchmark":                cfg["benchmark"],
@@ -856,7 +846,7 @@ def portfolio():
             "income_records":           income_records,
             "total_income_usd":         total_income_disp,
             "dividends_usd":            dividends_disp,
-        }))
+        })
     except Exception as e:
         import traceback
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
@@ -1151,6 +1141,16 @@ def asset_class_performance():
             ]
             if padding:
                 ac_series[ac] = padding + series
+        
+        def sanitise(obj):
+            """Recursively replace float NaN/Inf with None for JSON safety."""
+            if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+                return None
+            if isinstance(obj, dict):
+                return {k: sanitise(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [sanitise(v) for v in obj]
+            return obj
 
         active_classes = set(ac for ac, holdings in ac_holdings.items() if holdings)
         filtered_series = {ac: series for ac, series in ac_series.items()
