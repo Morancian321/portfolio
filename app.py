@@ -145,16 +145,14 @@ def apply_nav_overrides_to_prices(prices, nav_overrides):
 def parse_config(config_rows):
     cfg = {r["key"]: r["value"] for r in config_rows}
     return {
-        "starting_capital": float(cfg.get("starting_capital", 100000)),
+        "starting_capital": float(cfg.get("starting_capital", 100000000)),
         "base_currency": cfg.get("base_currency", "USD"),
         "inception_date": cfg.get("inception_date", "2026-01-14"),
-        # FIX 17: updated benchmark defaults to current 50:50 composition.
         "benchmark": cfg.get("benchmark", "IWDA.AS"),
         "benchmark_bond": cfg.get("benchmark_bond", "AGGH.AS"),
         "benchmark_equity_weight": float(cfg.get("benchmark_equity_weight", 0.5)),
         "benchmark_bond_weight": float(cfg.get("benchmark_bond_weight", 0.5)),
         "portfolio_name": cfg.get("portfolio_name", "Investment Portfolio"),
-        "display_currency": cfg.get("display_currency", "USD"), # FIX 14
     }
 
 def get_fx_rates():
@@ -492,32 +490,24 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
 
         if is_inception_day:
             port_val = cash
+
             for tk, h in holdings.items():
                 currency = h.get("currency", get_currency({}, h["yf_ticker"]))
-                fx_r     = fx_on_date(currency, dt)
+                fx_r = fx_on_date(currency, dt)
                 port_val += h["avg_cost_base"] * fx_r * h["qty"]
-            # inception day: use historical rate (same as else block)
-            if disp_currency == "EUR":
-                hist_rate = fx_on_date("EUR", dt)
-                port_val_disp = port_val / hist_rate if hist_rate > 0 else port_val
-            elif disp_currency == "GBP":
-                hist_rate = fx_on_date("GBP", dt)
-                port_val_disp = port_val / hist_rate if hist_rate > 0 else port_val
-            else:
-                port_val_disp = port_val
-            nav_series.append({"date": ds, "value": round(port_val_disp, 2)})
+
+            nav_series.append({
+                "date": ds,
+                "value": round(port_val, 2)
+            })
 
         elif is_final_date and live_positions_mv is not None and live_cash is not None:
             port_val = live_cash + live_positions_mv
-            if disp_currency == "EUR":
-                live_rate = fx_rates.get("EUR", 1.0)
-                port_val_disp = port_val / live_rate if live_rate > 0 else port_val
-            elif disp_currency == "GBP":
-                live_rate = fx_rates.get("GBP", 1.0)
-                port_val_disp = port_val / live_rate if live_rate > 0 else port_val
-            else:
-                port_val_disp = port_val
-            nav_series.append({"date": ds, "value": round(port_val_disp, 2)})
+
+            nav_series.append({
+                "date": ds,
+                "value": round(port_val, 2)
+            })
 
         else:
             port_val = cash
@@ -535,28 +525,21 @@ def build_nav_curve(trades, fx_rates, cfg, benchmark_ticker, nav_overrides=None,
                         port_val += h["qty"]
                 except:
                     pass
-            if disp_currency == "EUR":
-                hist_rate = fx_on_date("EUR", dt)
-                port_val_disp = port_val / hist_rate if hist_rate > 0 else port_val
-            elif disp_currency == "GBP":
-                hist_rate = fx_on_date("GBP", dt)
-                port_val_disp = port_val / hist_rate if hist_rate > 0 else port_val
-            else:
-                port_val_disp = port_val
-            nav_series.append({"date": ds, "value": round(port_val_disp, 2)})
+            nav_series.append({
+                "date": ds,
+                "value": round(port_val, 2)
+            })
 
         try:
             eq_p   = float(prices.loc[:dt, bench_eq_ticker].iloc[-1])   if bench_eq_ticker   in prices.columns else None
             bond_p = float(prices.loc[:dt, bench_bond_ticker].iloc[-1]) if bench_bond_ticker in prices.columns else None
             if eq_p is not None and bond_p is not None:
                 if bench_start is None:
-                    eurusd_inception = fx_on_date("EUR", dt)        # reads hist_eurusd on inception date
-                    starting_eur = starting / eurusd_inception       # converts USD→EUR once, locked forever
                     bench_start = {"eq": eq_p, "bond": bond_p, "starting_eur": starting_eur}
 
                 blended = (
-                    bench_start["starting_eur"] * (eq_p   / bench_start["eq"])   * bench_eq_w +
-                    bench_start["starting_eur"] * (bond_p / bench_start["bond"]) * bench_bond_w
+                    bench_start["starting_usd"] * (eq_p   / bench_start["eq"])   * bench_eq_w +
+                    bench_start["starting_usd"] * (bond_p / bench_start["bond"]) * bench_bond_w
                 )
                 bench_series.append({"date": ds, "value": round(blended, 2)})
         except:
@@ -703,8 +686,8 @@ def portfolio():
         trades, config_rows, manual_rows, nav_overrides_rows, income_rows = get_sheet_data()
         cfg          = parse_config(config_rows)
         fx_rates     = get_fx_rates()
-        disp        = cfg.get("display_currency", "USD")
-        usd_to_disp = (1.0 / fx_rates[disp]) if (disp != "USD" and disp in fx_rates) else 1.0
+        disp = "USD"
+        usd_to_disp = 1.0
         rf_rate      = get_risk_free_rate()
         manual_map   = {r["ticker"]: r["manual_price"] for r in manual_rows if r.get("ticker")}
         nav_overrides = parse_nav_overrides(nav_overrides_rows)
@@ -929,14 +912,8 @@ def asset_class_performance():
                 return val if pd.notna(val) else fallback
             except: return fallback
 
-        def fx_to_display(currency):
-            asset_fx = fx_rates.get(fx_key(currency), 1.0)
-            display_fx = fx_rates.get(disp, 1.0)
-
-            if disp != "USD" and display_fx > 0:
-                return asset_fx / display_fx
-
-            return asset_fx
+        def fx_to_usd(currency):
+            return fx_rates.get(fx_key(currency), 1.0)
         
         from collections import defaultdict
         events_by_date = defaultdict(list)
@@ -996,20 +973,7 @@ def asset_class_performance():
             _cash_running += income_by_date_total.get(ds, 0.0)
             hist_cash[ds] = max(_cash_running, 0.0)
             
-            if disp == "EUR" and hist_eurusd is not None:
-                try:
-                    eur_rate = float(hist_eurusd.loc[:dt].iloc[-1])
-                    hist_cash_disp[ds] = max(_cash_running / eur_rate, 0.0) if eur_rate > 0 else max(_cash_running * usd_to_disp, 0.0)
-                except:
-                    hist_cash_disp[ds] = max(_cash_running * usd_to_disp, 0.0)
-            elif disp == "GBP" and hist_gbpusd is not None:
-                try:
-                    gbp_rate = float(hist_gbpusd.loc[:dt].iloc[-1])
-                    hist_cash_disp[ds] = max(_cash_running / gbp_rate, 0.0) if gbp_rate > 0 else max(_cash_running * usd_to_disp, 0.0)
-                except:
-                    hist_cash_disp[ds] = max(_cash_running * usd_to_disp, 0.0)
-            else:
-                hist_cash_disp[ds] = hist_cash[ds]
+            hist_cash_disp[ds] = hist_cash[ds]
         
         ac_series  = defaultdict(list)
 
@@ -1018,7 +982,7 @@ def asset_class_performance():
             for tk, h in holdings_dict.items():
                 ytk      = h["yf_ticker"]
                 currency = h.get("currency", "USD")
-                fx_r = fx_to_display(currency)
+                fx_r = fx_to_usd(currency)
                 if ytk not in prices.columns:
                     mv += h["avg_cost_base"] * fx_r * h["qty"]
                     continue
@@ -1057,7 +1021,7 @@ def asset_class_performance():
                 holdings = ac_holdings[ac]
                 if action == "OPEN":
                     holdings[tk] = {"qty": qty, "yf_ticker": ytk, "currency": currency, "avg_cost_base": price_base}
-                    _fx_r = fx_to_display(currency)
+                    _fx_r = fx_to_usd(currency)
                     cf_net_by_ac[ac] += price_base * _fx_r * qty
                     
                 elif action == "ADD":
@@ -1070,7 +1034,7 @@ def asset_class_performance():
                     else:
                         holdings[tk] = {"qty": qty, "yf_ticker": ytk,
                                         "currency": currency, "avg_cost_base": price_base}
-                    _fx_r = fx_to_display(currency)
+                    _fx_r = fx_to_usd(currency)
                     cf_net_by_ac[ac] += price_base * _fx_r * qty
                         
                 elif action == "REDUCE":
@@ -1079,13 +1043,13 @@ def asset_class_performance():
                         holdings[tk]["qty"] -= reduce_qty
                         if holdings[tk]["qty"] <= 0:
                             del holdings[tk]
-                        _fx_r = fx_to_display(currency)                      
+                        _fx_r = fx_to_usd(currency)                      
                         cf_net_by_ac[ac] -= price_base * _fx_r * reduce_qty
                         
                 elif action == "CLOSE":
                     close_qty = holdings.get(tk, {}).get("qty", qty)
                     holdings.pop(tk, None)
-                    _fx_r = fx_to_display(currency)                 
+                    _fx_r = fx_to_usd(currency)                 
                     cf_net_by_ac[ac] -= price_base * _fx_r * close_qty
                     if not holdings:
                         ac_mv_prev[ac] = -1.0
