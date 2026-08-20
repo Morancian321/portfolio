@@ -5,7 +5,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@300..700&display=swap" rel="stylesheet">
-<!-- Chart.js and adapter are lazy-loaded to avoid blocking initial render -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
 <style>
 /* ── Design Tokens ──────────────────────────────────────────────────────────── */
 :root,[data-theme="light"]{
@@ -226,6 +227,11 @@ tr.row-loss td:last-child{color:var(--color-error)}
 /* ── Dashboard - Band Chart ──────────────────────────────────────────────────── */
 .dash-alloc-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin-bottom:2rem}
 @media(max-width:768px){.dash-alloc-grid{grid-template-columns:1fr}}
+.dash-summary-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin-bottom:2rem;align-items:stretch}
+.dash-summary-kpis{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem;margin-bottom:0}
+.dash-summary-chart{height:100%;display:flex;flex-direction:column}
+.dash-summary-chart .chart-wrap{flex:1;min-height:260px}
+@media(max-width:768px){.dash-summary-grid{grid-template-columns:1fr}.dash-summary-chart{height:auto}}
 
 /* ── Dashboard - filter select ───────────────────────────────────────────────── */
 .dash-pos-filter-select{font-size:.75rem;padding:.3rem .6rem;border-radius:var(--radius-md);border:1px solid var(--color-border);background:var(--color-surface);color:var(--color-text);cursor:pointer}
@@ -306,7 +312,7 @@ tr.row-loss td:last-child{color:var(--color-error)}
 
 <div class="bug-warning-banner" role="alert">
   TEMPORARY BUG WARNING: IF C&amp;CE VALUE IS ~8% OF NAV, PLEASE REFRESH.
-  IT WILL CORRECT TO ~3% OF NAV.
+  IT WILL CORRECT TO ~4% OF NAV.
 </div>
 
 <main>
@@ -369,25 +375,6 @@ const TARGET_WEIGHTS = { IWDA: 25, AGGG: 22 };  // TODO: fill in all tickers
 const CHANGELOG = [{ date: '2026-05-08', change: 'Multi-page fund centre rebuild', commit: 'TODO' }];
 const BREACH_HISTORY = [];
 
-// ── Lazy loader + scheduler for charts (non-blocking) ───────────────────────
-window._pendingCharts = window._pendingCharts || [];
-function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    if (document.querySelector(`script[src="${src}"]`)) return resolve();
-    const s = document.createElement('script');
-    s.src = src; s.async = true; s.onload = resolve; s.onerror = reject;
-    document.head.appendChild(s);
-  });
-}
-function scheduleChartBuild(fn) {
-  if (window.Chart) {
-    try { fn(); } catch (e) { console.error('Chart build error', e); }
-  } else {
-    window._pendingCharts.push(fn);
-  }
-}
-
-
 // ════════════════════════════════════════════════════════════════════════════
 // SECTION 3 - DATA LAYER
 // ════════════════════════════════════════════════════════════════════════════
@@ -395,47 +382,12 @@ window._portfolioData = null;
 window._rationaleData = null;
 
 async function fetchPortfolio() {
-  const CACHE_KEY = 'portfolioCacheV1';
-
-  try {
-    const res = await fetch(API + '/api/portfolio', {
-      cache: 'no-store'
-    });
-
-    if (!res.ok) {
-      throw new Error('API returned ' + res.status);
-    }
-
-    const d = await res.json();
-
-    if (d.error) {
-      throw new Error(d.error);
-    }
-
-    window._portfolioData = d;
-
-    try {
-      localStorage.setItem(CACHE_KEY, JSON.stringify(d));
-    } catch (_) {}
-
-    return d;
-  } catch (e) {
-    // Use cached data only if the live API request fails
-    try {
-      const cached = localStorage.getItem(CACHE_KEY);
-
-      if (cached) {
-        const d = JSON.parse(cached);
-        window._portfolioData = d;
-
-        console.warn('Using cached portfolio data because the live request failed:', e);
-
-        return d;
-      }
-    } catch (_) {}
-
-    throw e;
-  }
+  const res = await fetch(API + '/api/portfolio');
+  if (!res.ok) throw new Error('API returned ' + res.status);
+  const d = await res.json();
+  if (d.error) throw new Error(d.error);
+  window._portfolioData = d;
+  return d;
 }
 
 async function fetchTradeRationale() {
@@ -840,8 +792,9 @@ function renderDashboard(root) {
   root.innerHTML = `
     ${SectionHeader('Dashboard', 'Full portfolio analytics')}
 
-    <!-- KPI Row 1: Primary -->
-    <div class="kpi-grid section-gap" style="margin-bottom:1rem">
+    <!-- KPI Summary -->
+    <div class="dash-summary-grid">
+      <div class="dash-summary-kpis">
       ${MetricCard(
         'Net Asset Value (NAV)',
         fmt(summary.current_value, 0),
@@ -854,7 +807,6 @@ function renderDashboard(root) {
         { text: fmtPct(summary.simple_total_return_pct), cls: pnlPos ? 'up' : 'down' },
         pnlPos ? 'success' : 'danger'
       )}
-      
       ${MetricCard(
         'Open Positions',
         allOpenPos.filter(p => p.asset_class !== 'C&CE').length
@@ -864,6 +816,11 @@ function renderDashboard(root) {
         fmt(cceTotal, 0),
         incomeSubtitle
       )}
+      </div>
+      <div class="chart-card dash-summary-chart">
+        <div class="chart-title">Asset Allocation</div>
+        <div class="chart-wrap"><canvas id="dashAllocCanvas"></canvas></div>
+      </div>
     </div>
 
     <!-- KPI Row 2: Portfolio vs Benchmark -->
@@ -916,16 +873,230 @@ function renderDashboard(root) {
     <!-- Allocation Section -->
     <div class="dash-alloc-grid">
       <div class="chart-card">
-        <div class="chart-title">Asset Allocation</div>
-        <div class="chart-wrap"><canvas id="dashAllocCanvas"></canvas></div>
-      </div>
-      <div class="chart-card">
         <div class="chart-title">Drawdown Band</div>
         <div class="chart-wrap"><canvas id="dashBandCanvas"></canvas></div>
       </div>
     </div>
 
-    <!-- Asset Class Performance Chart (moved from Positions) -->
+    <!-- Closed Trades Table -->
+    <div class="table-card section-gap">
+      <div class="table-header">
+        <h2>Closed Trades</h2>
+      </div>
+      <div id="dashClosedTableWrap"></div>
+    </div>
+  `;
+
+  // ── NAV Chart ─────────────────────────────────────────────────────────────
+  const filteredNav   = filterSeriesByRange(navSeries, currentRange);
+  const filteredBench = filterSeriesByRange(benchSeries, currentRange);
+  const c = chartDefaults();
+
+  destroyChartSafe(dashNavChart);
+  dashNavChart = null;
+  const navCtx = document.getElementById('dashNavCanvas')?.getContext('2d');
+  if (navCtx) {
+    if (filteredNav.length === 0 && filteredBench.length === 0) {
+      navCtx.canvas.parentElement.innerHTML = EmptyState('📈', 'No NAV data', 'NAV series is empty for this range.');
+    } else {
+      dashNavChart = new Chart(navCtx, {
+        type: 'line',
+        data: {
+          datasets: [
+            {
+              label: 'Portfolio',
+              data: filteredNav.map(x => ({ x: x.date, y: x.value })),
+              borderColor: '#4f98a3',
+              backgroundColor: 'rgba(79,152,163,.08)',
+              borderWidth: 2,
+              pointRadius: 0,
+              fill: true,
+              tension: .3
+            },
+            {
+              label: '50:50 Benchmark',
+              data: filteredBench.map(x => ({ x: x.date, y: x.value })),
+              borderColor: '#d29922',
+              borderWidth: 1.5,
+              borderDash: [4,3],
+              pointRadius: 0,
+              fill: false,
+              tension: .3
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode:'index', intersect:false },
+          plugins: {
+            legend: { labels:{ color:c.text, font:{ size:11 }, boxWidth:24, padding:16 } },
+            tooltip: {
+              backgroundColor: c.tooltip_bg,
+              borderColor: c.tooltip_border,
+              borderWidth: 1,
+              titleColor: c.text,
+              bodyColor: c.text,
+              callbacks: {
+                label: ctx => ' ' + ctx.dataset.label + ': €' + Number(ctx.parsed.y).toLocaleString('en-US',{ minimumFractionDigits:2, maximumFractionDigits:2 })
+              }
+            }
+          },
+          scales: {
+            x: { type:'time', time:{ unit:'month' }, grid:{ color:c.grid }, ticks:{ color:c.text, font:{ size:11 } } },
+            y: { grid:{ color:c.grid }, ticks:{ color:c.text, font:{ size:11 }, callback: v => '€' + Number(v).toLocaleString('en-US',{ maximumFractionDigits:0 }) } }
+          }
+        }
+      });
+    }
+  }
+
+  // ── Allocation Doughnut ───────────────────────────────────────────────────
+  destroyChartSafe(dashAllocChart);
+  dashAllocChart = null;
+  const allocCtx = document.getElementById('dashAllocCanvas')?.getContext('2d');
+  if (allocCtx) {
+    const allocLabels = Object.keys(allocation || {});
+    const allocVals   = Object.values(allocation || {});
+    if (!allocLabels.length) {
+      allocCtx.canvas.parentElement.innerHTML = EmptyState('🥧', 'No allocation data', 'Allocation data is not available.');
+    } else {
+      dashAllocChart = new Chart(allocCtx, {
+        type: 'doughnut',
+        data: {
+          labels: allocLabels,
+          datasets: [{
+            data: allocVals,
+            backgroundColor: allocPalette(allocLabels.length),
+            borderWidth: 0,
+            borderColor: document.documentElement.getAttribute('data-theme') === 'dark' ? '#161b22' : '#f9f8f5'
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          cutout: '62%',
+          plugins: {
+            legend: { position:'bottom', labels:{ color:c.text, font:{ size:11 }, padding:12, boxWidth:12 } },
+            tooltip: {
+              backgroundColor: c.tooltip_bg,
+              borderColor: c.tooltip_border,
+              borderWidth: 1,
+              titleColor: c.text,
+              bodyColor: c.text,
+              callbacks: { label: ctx => ' ' + ctx.label + ': ' + Number(ctx.parsed).toFixed(1) + '%' }
+            }
+          }
+        }
+      });
+    }
+  }
+
+  // ── Drawdown Band Chart ───────────────────────────────────────────────────
+  destroyChartSafe(dashBandChart);
+  dashBandChart = null;
+  const bandCtx = document.getElementById('dashBandCanvas')?.getContext('2d');
+  if (bandCtx) {
+    const ddSeries = computeDrawdownSeries(filterSeriesByRange(navSeries, currentRange));
+    if (!ddSeries.length) {
+      bandCtx.canvas.parentElement.innerHTML = EmptyState('📉', 'No drawdown data', 'Insufficient NAV data for this range.');
+    } else {
+      dashBandChart = new Chart(bandCtx, {
+        type: 'line',
+        data: {
+          datasets: [{
+            label: 'Drawdown %',
+            data: ddSeries.map(x => ({ x: x.date, y: -x.drawdown_pct })),
+            borderColor: '#f85149',
+            backgroundColor: 'rgba(248,81,73,.10)',
+            borderWidth: 1.5,
+            pointRadius: 0,
+            fill: true,
+            tension: .3
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode:'index', intersect:false },
+          plugins: {
+            legend: { labels:{ color:c.text, font:{ size:11 }, boxWidth:24, padding:16 } },
+            tooltip: {
+              backgroundColor: c.tooltip_bg,
+              borderColor: c.tooltip_border,
+              borderWidth: 1,
+              titleColor: c.text,
+              bodyColor: c.text,
+              callbacks: { label: ctx => ' Drawdown: ' + Number(ctx.parsed.y).toFixed(2) + '%' }
+            }
+          },
+          scales: {
+            x: { type:'time', time:{ unit:'month' }, grid:{ color:c.grid }, ticks:{ color:c.text, font:{ size:11 } } },
+            y: {
+              grid:{ color:c.grid },
+              ticks:{ color:c.text, font:{ size:11 }, callback: v => v.toFixed(1) + '%' },
+              max: 0
+            }
+          }
+        }
+      });
+    }
+  }
+
+  // ── Open Positions Table ─────────────────────────────────────────────────────
+  applyDashPosFilters();
+
+  // ── Closed Trades Table ───────────────────────────────────────────────────
+  const closedWrap = document.getElementById('dashClosedTableWrap');
+  if (closedWrap) {
+    const closedRows = [...getClosedTrades()].sort((a, b) => new Date(b.date) - new Date(a.date));
+    const closedColumns = [
+      { key: 'date', label: 'Date', render: val => val || '-' },
+      {
+        key: 'name', label: 'Name / Ticker',
+        render: (val, row) => `<strong>${val}<\/strong><br><span style="font-size:.7rem;color:var(--color-text-muted)">${row.ticker}<\/span>`
+      },
+      { key: 'asset_class', label: 'Class', render: val => `<span class="badge ${badgeAssetClass(val)}">${val || '-'}<\/span>` },
+      { key: 'qty', label: 'Qty', render: val => Number(val).toFixed(0) },
+      { key: 'entry_price', label: 'Entry Price', render: val => val != null ? Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}) : '-' },
+      { key: 'exit_price', label: 'Exit Price', render: val => val != null ? Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}) : '-' },
+      { key: 'realised_pnl_usd', label: 'Realised P&L', render: val => `<span class="${val >= 0 ? 'up' : 'down'}">${fmt(val, 0)}<\/span>` },
+      { key: 'entry_price', label: 'Return %', render: (val, row) => val && row.exit_price ? fmtPct(((row.exit_price - val) / val) * 100) : '-' }
+    ];
+    const closedOptions = {
+      rowClass: row => row.realised_pnl_usd > 0 ? 'row-profit' : row.realised_pnl_usd < 0 ? 'row-loss' : '',
+      emptyMessage: 'Closed trade history will appear here once trades are completed.'
+    };
+    closedWrap.innerHTML = closedRows.length === 0
+      ? EmptyState('📭', 'No closed trades', 'Closed trade history will appear here once trades are completed.')
+      : DataTable(closedColumns, closedRows, closedOptions);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SECTION 9 - PAGE RENDERERS
+// ════════════════════════════════════════════════════════════════════════════
+
+function renderPositions(root) {
+  const summary      = getSummary();
+  const ccePositions = getCCEPositions();
+  const cceTotal     = getCCETotal();
+  const cceMV        = ccePositions.reduce((s, p) => s + (p.mv_usd || 0), 0);
+  const uninvested   = summary.cash || 0;
+  const navTotal     = summary.current_value || 1;
+
+  // Income data
+  const incomeRecords  = [...getIncomeRecords()].sort((a, b) => new Date(b.date) - new Date(a.date));
+  const totalIncome    = getTotalIncome();
+  const divIncome      = getDividendsUsd();
+  const allOpenPos    = getOpenPositions();
+  const uniqueClasses = [...new Set(
+    allOpenPos.filter(p => p.asset_class !== 'C&CE').map(p => p.asset_class).filter(Boolean))].sort();
+  
+  root.innerHTML = `
+    ${SectionHeader('Positions', 'Open positions &amp; cash sleeve')}
+
+    <!-- Asset Class Performance Chart -->
     <div class="chart-card section-gap" id="acPerfCard">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:1.25rem;flex-wrap:wrap;gap:.75rem">
         <div>
@@ -937,177 +1108,132 @@ function renderDashboard(root) {
       <div class="chart-wrap" style="height:280px"><canvas id="acPerfCanvas"></canvas></div>
     </div>
 
-    <!-- Closed Trades Table -->
-    <!-- Closed Trades Table (moved to Positions) -->
+    <!-- Open Positions Table -->
+    <div class="table-card section-gap">
+      <div class="table-header">
+        <h2>Open Positions</h2>
+        <div style="display:flex;gap:.5rem;align-items:center">
+          <select id="dashPosAssetFilter" class="dash-pos-filter-select"
+             
+    onchange="window._dashPosFilters.assetClass=this.value;applyDashPosFilters()">
+            <option value="All Classes">All Classes</option>
+            ${uniqueClasses.map(c => `<option value="${c}"${window._dashPosFilters.assetClass===c?' selected':''}>${c}<\/option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div id="dashPosTableWrap"></div>
+    </div>
+
+    <!-- Cash & Cash Equivalents Box -->
+    <div class="table-card section-gap">
+      <div class="table-header">
+        <h2>Cash &amp; Cash Equivalents</h2>
+        <div style="display:flex;gap:1.5rem;align-items:center">
+          <div class="cce-stat">
+            <span class="cce-stat-label">Uninvested Cash</span>
+            <span class="cce-stat-value">${fmt(uninvested, 0)}</span>
+          </div>
+          <div class="cce-stat">
+            <span class="cce-stat-label">C&amp;CE Instruments</span>
+            <span class="cce-stat-value">${fmt(cceMV, 0)}</span>
+          </div>
+          <div style="width:1px;height:2rem;background:var(--color-divider)"></div>
+          <div class="cce-stat">
+            <span class="cce-stat-label">Total C&amp;CE</span>
+            <span class="cce-total-value">${fmt(cceTotal, 0)}</span>
+          </div>
+          <div class="cce-stat">
+            <span class="cce-stat-label">% of NAV</span>
+            <span class="cce-stat-value">${fmtPctRaw(navTotal > 0 ? (cceTotal / navTotal * 100) : 0)}</span>
+          </div>
+        </div>
+      </div>
+      <div id="posCCETableWrap"></div>
+    </div>
+
+    <!-- Income Received Box -->
+    <div class="table-card section-gap">
+      <div class="table-header">
+        <h2>Income Received</h2>
+        <div style="display:flex;gap:1.5rem;align-items:center">
+          <div class="cce-stat">
+            <span class="cce-stat-label">Dividends</span>
+            <span class="cce-stat-value">${fmt(divIncome, 0)}</span>
+          </div>
+          <div style="width:1px;height:2rem;background:var(--color-divider)"></div>
+          <div class="cce-stat">
+            <span class="cce-stat-label">Total Income</span>
+            <span class="cce-total-value">${fmt(totalIncome, 0)}</span>
+          </div>
+        </div>
+      </div>
+      <div id="posIncomeTableWrap"></div>
+    </div>
   `;
 
-  // ── NAV Chart ─────────────────────────────────────────────────────────────
-  const filteredNav   = filterSeriesByRange(navSeries, currentRange);
-  const filteredBench = filterSeriesByRange(benchSeries, currentRange);
-  const c = chartDefaults();
+  // ── C&CE Table ────────────────────────────────────────────────────────────
+  const cceWrap = document.getElementById('posCCETableWrap');
+  if (cceWrap) {
+    const cceCols = [
+      {
+        key: 'name', label: 'Name / Ticker',
+        render: (val, row) => `<strong>${val}<\/strong><br><span style="font-size:.7rem;color:var(--color-text-muted)">${row.ticker}<\/span>`
+      },
+      { key: 'mv_usd', label: 'Market Value', render: val => fmt(val, 0) },
+      { key: 'weight_pct', label: '% of NAV', render: val => fmtPctRaw(val) },
+      {
+        key: 'avg_price', label: 'Avg Price',
+        render: (val, row) => `${row.currency} ${Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4})}`
+      },
+      {
+        key: 'live_price', label: 'Live Price',
+        render: (val, row) => val != null
+          ? `${row.currency} ${Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4})}`
+          : '-'
+      },
+      { key: 'unreal_pnl', label: 'Unrealised P&L', render: val => `<span class="${val >= 0 ? 'up' : 'down'}">${fmt(val, 0)}<\/span>` },
+      { key: 'unreal_pct', label: 'Return %', render: val => `<span class="${val >= 0 ? 'up' : 'down'}">${fmtPct(val)}<\/span>` },
+      { key: 'open_date', label: 'Open Date' }
+    ];
+    cceWrap.innerHTML = !ccePositions.length
+      ? EmptyState('💵', 'No C&CE instruments deployed',
+          'Add rows with asset_class "C&CE" to your trades sheet to populate this table. Uninvested cash is shown in the header above.')
+      : DataTable(cceCols, ccePositions, {});
+  }
 
-  scheduleChartBuild(() => {
-    destroyChartSafe(dashNavChart);
-    dashNavChart = null;
-    const navCtx = document.getElementById('dashNavCanvas')?.getContext('2d');
-    if (navCtx) {
-      if (filteredNav.length === 0 && filteredBench.length === 0) {
-        navCtx.canvas.parentElement.innerHTML = EmptyState('📈', 'No NAV data', 'NAV series is empty for this range.');
-      } else {
-        dashNavChart = new Chart(navCtx, {
-          type: 'line',
-          data: {
-            datasets: [
-              {
-                label: 'Portfolio',
-                data: filteredNav.map(x => ({ x: x.date, y: x.value })),
-                borderColor: '#4f98a3',
-                backgroundColor: 'rgba(79,152,163,.08)',
-                borderWidth: 2,
-                pointRadius: 0,
-                fill: true,
-                tension: .3
-              },
-              {
-                label: '50:50 Benchmark',
-                data: filteredBench.map(x => ({ x: x.date, y: x.value })),
-                borderColor: '#d29922',
-                borderWidth: 1.5,
-                borderDash: [4,3],
-                pointRadius: 0,
-                fill: false,
-                tension: .3
-              }
-            ]
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            interaction: { mode:'index', intersect:false },
-            plugins: {
-              legend: { labels:{ color:c.text, font:{ size:11 }, boxWidth:24, padding:16 } },
-              tooltip: {
-                backgroundColor: c.tooltip_bg,
-                borderColor: c.tooltip_border,
-                borderWidth: 1,
-                titleColor: c.text,
-                bodyColor: c.text,
-                callbacks: {
-                  label: ctx => ' ' + ctx.dataset.label + ': €' + Number(ctx.parsed.y).toLocaleString('en-US',{ minimumFractionDigits:2, maximumFractionDigits:2 })
-                }
-              }
-            },
-            scales: {
-              x: { type:'time', time:{ unit:'month' }, grid:{ color:c.grid }, ticks:{ color:c.text, font:{ size:11 } } },
-              y: { grid:{ color:c.grid }, ticks:{ color:c.text, font:{ size:11 }, callback: v => '€' + Number(v).toLocaleString('en-US',{ maximumFractionDigits:0 }) } }
-            }
-          }
-        });
+  // ── Income Table ──────────────────────────────────────────────────────────
+  const incomeWrap = document.getElementById('posIncomeTableWrap');
+  if (incomeWrap) {
+    const incomeCols = [
+      { key: 'date', label: 'Date', render: val => val || '-' },
+      {
+        key: 'income_type', label: 'Type',
+        render: val => Badge(val, val === 'Dividend' ? 'success' : 'purple')
+      },
+      {
+        key: 'note', label: 'Source',
+        render: val => `<span style="font-weight:500">${val || '-'}<\/span>`
+      },
+      {
+        key: 'currency', label: 'Currency',
+        render: val => Badge(val, 'default')
+      },
+      {
+        key: 'cash_usd', label: 'Amount (EUR)',
+        render: val => `<span class="up">${fmt(val, 0)}<\/span>`
       }
-    }
-  });
-
-  // ── Allocation Doughnut ───────────────────────────────────────────────────
-  scheduleChartBuild(() => {
-    destroyChartSafe(dashAllocChart);
-    dashAllocChart = null;
-    const allocCtx = document.getElementById('dashAllocCanvas')?.getContext('2d');
-    if (allocCtx) {
-      const allocLabels = Object.keys(allocation || {});
-      const allocVals   = Object.values(allocation || {});
-      if (!allocLabels.length) {
-        allocCtx.canvas.parentElement.innerHTML = EmptyState('🥧', 'No allocation data', 'Allocation data is not available.');
-      } else {
-        dashAllocChart = new Chart(allocCtx, {
-          type: 'doughnut',
-          data: {
-            labels: allocLabels,
-            datasets: [{
-              data: allocVals,
-              backgroundColor: allocPalette(allocLabels.length),
-              borderWidth: 0,
-              borderColor: document.documentElement.getAttribute('data-theme') === 'dark' ? '#161b22' : '#f9f8f5'
-            }]
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            cutout: '62%',
-            plugins: {
-              legend: { position:'bottom', labels:{ color:c.text, font:{ size:11 }, padding:12, boxWidth:12 } },
-              tooltip: {
-                backgroundColor: c.tooltip_bg,
-                borderColor: c.tooltip_border,
-                borderWidth: 1,
-                titleColor: c.text,
-                bodyColor: c.text,
-                callbacks: { label: ctx => ' ' + ctx.label + ': ' + Number(ctx.parsed).toFixed(1) + '%' }
-              }
-            }
-          }
+    ];
+    incomeWrap.innerHTML = !incomeRecords.length
+      ? EmptyState('💰', 'No income recorded',
+          'Dividend payments logged in the dividends_coupons sheet will appear here.')
+      : DataTable(incomeCols, incomeRecords, {
+          emptyMessage: 'No income records to display.'
         });
-      }
-    }
-  });
-
-  // ── Drawdown Band Chart ───────────────────────────────────────────────────
-  scheduleChartBuild(() => {
-    destroyChartSafe(dashBandChart);
-    dashBandChart = null;
-    const bandCtx = document.getElementById('dashBandCanvas')?.getContext('2d');
-    if (bandCtx) {
-      const ddSeries = computeDrawdownSeries(filterSeriesByRange(navSeries, currentRange));
-      if (!ddSeries.length) {
-        bandCtx.canvas.parentElement.innerHTML = EmptyState('📉', 'No drawdown data', 'Insufficient NAV data for this range.');
-      } else {
-        dashBandChart = new Chart(bandCtx, {
-          type: 'line',
-          data: {
-            datasets: [{
-              label: 'Drawdown %',
-              data: ddSeries.map(x => ({ x: x.date, y: -x.drawdown_pct })),
-              borderColor: '#f85149',
-              backgroundColor: 'rgba(248,81,73,.10)',
-              borderWidth: 1.5,
-              pointRadius: 0,
-              fill: true,
-              tension: .3
-            }]
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            interaction: { mode:'index', intersect:false },
-            plugins: {
-              legend: { labels:{ color:c.text, font:{ size:11 }, boxWidth:24, padding:16 } },
-              tooltip: {
-                backgroundColor: c.tooltip_bg,
-                borderColor: c.tooltip_border,
-                borderWidth: 1,
-                titleColor: c.text,
-                bodyColor: c.text,
-                callbacks: { label: ctx => ' Drawdown: ' + Number(ctx.parsed.y).toFixed(2) + '%' }
-              }
-            },
-            scales: {
-              x: { type:'time', time:{ unit:'month' }, grid:{ color:c.grid }, ticks:{ color:c.text, font:{ size:11 } } },
-              y: {
-                grid:{ color:c.grid },
-                ticks:{ color:c.text, font:{ size:11 }, callback: v => v.toFixed(1) + '%' },
-                max: 0
-              }
-            }
-          }
-        });
-      }
-    }
-  });
-
-  // ── Open Positions Table ─────────────────────────────────────────────────────
+  }
   applyDashPosFilters();
 
-  // ── Asset Class Performance Chart (moved from Positions) ───────────────────
-  scheduleChartBuild(function buildAcPerfChart() {
+  // ── Asset Class Performance Chart ─────────────────────────────────────────
+  (function buildAcPerfChart() {
     const acData  = getAcPerfData();
     const heldClasses = new Set(
       getOpenPositions()
@@ -1252,191 +1378,7 @@ function renderDashboard(root) {
       });
       acPerfChart.update();
     };
-  });
-
-  // Closed Trades moved to Positions view
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-// SECTION 9 - PAGE RENDERERS
-// ════════════════════════════════════════════════════════════════════════════
-
-function renderPositions(root) {
-  const summary      = getSummary();
-  const ccePositions = getCCEPositions();
-  const cceTotal     = getCCETotal();
-  const cceMV        = ccePositions.reduce((s, p) => s + (p.mv_usd || 0), 0);
-  const uninvested   = summary.cash || 0;
-  const navTotal     = summary.current_value || 1;
-
-  // Income data
-  const incomeRecords  = [...getIncomeRecords()].sort((a, b) => new Date(b.date) - new Date(a.date));
-  const totalIncome    = getTotalIncome();
-  const divIncome      = getDividendsUsd();
-  const allOpenPos    = getOpenPositions();
-  const uniqueClasses = [...new Set(
-    allOpenPos.filter(p => p.asset_class !== 'C&CE').map(p => p.asset_class).filter(Boolean))].sort();
-  
-  root.innerHTML = `
-    ${SectionHeader('Positions', 'Open positions &amp; cash sleeve')}
-
-    <!-- Asset Class Performance Chart (moved to Dashboard) -->
-
-    <!-- Open Positions Table -->
-    <div class="table-card section-gap">
-      <div class="table-header">
-        <h2>Open Positions</h2>
-        <div style="display:flex;gap:.5rem;align-items:center">
-          <select id="dashPosAssetFilter" class="dash-pos-filter-select"
-             
-    onchange="window._dashPosFilters.assetClass=this.value;applyDashPosFilters()">
-            <option value="All Classes">All Classes</option>
-            ${uniqueClasses.map(c => `<option value="${c}"${window._dashPosFilters.assetClass===c?' selected':''}>${c}<\/option>`).join('')}
-          </select>
-        </div>
-      </div>
-      <div id="dashPosTableWrap"></div>
-    </div>
-
-    <!-- Cash & Cash Equivalents Box -->
-    <div class="table-card section-gap">
-      <div class="table-header">
-        <h2>Cash &amp; Cash Equivalents</h2>
-        <div style="display:flex;gap:1.5rem;align-items:center">
-          <div class="cce-stat">
-            <span class="cce-stat-label">Uninvested Cash</span>
-            <span class="cce-stat-value">${fmt(uninvested, 0)}</span>
-          </div>
-          <div class="cce-stat">
-            <span class="cce-stat-label">C&amp;CE Instruments</span>
-            <span class="cce-stat-value">${fmt(cceMV, 0)}</span>
-          </div>
-          <div style="width:1px;height:2rem;background:var(--color-divider)"></div>
-          <div class="cce-stat">
-            <span class="cce-stat-label">Total C&amp;CE</span>
-            <span class="cce-total-value">${fmt(cceTotal, 0)}</span>
-          </div>
-          <div class="cce-stat">
-            <span class="cce-stat-label">% of NAV</span>
-            <span class="cce-stat-value">${fmtPctRaw(navTotal > 0 ? (cceTotal / navTotal * 100) : 0)}</span>
-          </div>
-        </div>
-      </div>
-      <div id="posCCETableWrap"></div>
-    </div>
-
-    <!-- Income Received Box -->
-    <div class="table-card section-gap">
-      <div class="table-header">
-        <h2>Income Received</h2>
-        <div style="display:flex;gap:1.5rem;align-items:center">
-          <div class="cce-stat">
-            <span class="cce-stat-label">Dividends</span>
-            <span class="cce-stat-value">${fmt(divIncome, 0)}</span>
-          </div>
-          <div style="width:1px;height:2rem;background:var(--color-divider)"></div>
-          <div class="cce-stat">
-            <span class="cce-stat-label">Total Income</span>
-            <span class="cce-total-value">${fmt(totalIncome, 0)}</span>
-          </div>
-        </div>
-      </div>
-      <div id="posIncomeTableWrap"></div>
-    </div>
-
-    <!-- Closed Trades Table -->
-    <div class="table-card section-gap">
-      <div class="table-header">
-        <h2>Closed Trades</h2>
-      </div>
-      <div id="posClosedTableWrap"></div>
-    </div>
-  `;
-
-  // ── C&CE Table ────────────────────────────────────────────────────────────
-  const cceWrap = document.getElementById('posCCETableWrap');
-  if (cceWrap) {
-    const cceCols = [
-      {
-        key: 'name', label: 'Name / Ticker',
-        render: (val, row) => `<strong>${val}<\/strong><br><span style="font-size:.7rem;color:var(--color-text-muted)">${row.ticker}<\/span>`
-      },
-      { key: 'mv_usd', label: 'Market Value', render: val => fmt(val, 0) },
-      { key: 'weight_pct', label: '% of NAV', render: val => fmtPctRaw(val) },
-      {
-        key: 'avg_price', label: 'Avg Price',
-        render: (val, row) => `${row.currency} ${Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4})}`
-      },
-      {
-        key: 'live_price', label: 'Live Price',
-        render: (val, row) => val != null
-          ? `${row.currency} ${Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4})}`
-          : '-'
-      },
-      { key: 'unreal_pnl', label: 'Unrealised P&L', render: val => `<span class="${val >= 0 ? 'up' : 'down'}">${fmt(val, 0)}<\/span>` },
-      { key: 'unreal_pct', label: 'Return %', render: val => `<span class="${val >= 0 ? 'up' : 'down'}">${fmtPct(val)}<\/span>` },
-      { key: 'open_date', label: 'Open Date' }
-    ];
-    cceWrap.innerHTML = !ccePositions.length
-      ? EmptyState('💵', 'No C&CE instruments deployed',
-          'Add rows with asset_class "C&CE" to your trades sheet to populate this table. Uninvested cash is shown in the header above.')
-      : DataTable(cceCols, ccePositions, {});
-  }
-
-  // ── Income Table ──────────────────────────────────────────────────────────
-  const incomeWrap = document.getElementById('posIncomeTableWrap');
-  if (incomeWrap) {
-    const incomeCols = [
-      { key: 'date', label: 'Date', render: val => val || '-' },
-      {
-        key: 'income_type', label: 'Type',
-        render: val => Badge(val, val === 'Dividend' ? 'success' : 'purple')
-      },
-      {
-        key: 'note', label: 'Source',
-        render: val => `<span style="font-weight:500">${val || '-'}<\/span>`
-      },
-      {
-        key: 'currency', label: 'Currency',
-        render: val => Badge(val, 'default')
-      },
-      {
-        key: 'cash_usd', label: 'Amount (EUR)',
-        render: val => `<span class="up">${fmt(val, 0)}<\/span>`
-      }
-    ];
-    incomeWrap.innerHTML = !incomeRecords.length
-      ? EmptyState('💰', 'No income recorded',
-          'Dividend payments logged in the dividends_coupons sheet will appear here.')
-      : DataTable(incomeCols, incomeRecords, {
-          emptyMessage: 'No income records to display.'
-        });
-  }
-
-  // ── Closed Trades Table (Positions) ───────────────────────────────────────
-  const posClosedWrap = document.getElementById('posClosedTableWrap');
-  if (posClosedWrap) {
-    const closedRows = [...getClosedTrades()].sort((a, b) => new Date(b.date) - new Date(a.date));
-    const closedColumns = [
-      { key: 'date', label: 'Date', render: val => val || '-' },
-      { key: 'name', label: 'Name / Ticker', render: (val, row) => `<strong>${val}<\/strong><br><span style="font-size:.7rem;color:var(--color-text-muted)">${row.ticker}<\/span>` },
-      { key: 'asset_class', label: 'Class', render: val => `<span class="badge ${badgeAssetClass(val)}">${val || '-'}<\/span>` },
-      { key: 'qty', label: 'Qty', render: val => Number(val).toFixed(0) },
-      { key: 'entry_price', label: 'Entry Price', render: val => val != null ? Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}) : '-' },
-      { key: 'exit_price', label: 'Exit Price', render: val => val != null ? Number(val).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}) : '-' },
-      { key: 'realised_pnl_usd', label: 'Realised P&L', render: val => `<span class="${val >= 0 ? 'up' : 'down'}">${fmt(val, 0)}<\/span>` },
-      { key: 'entry_price', label: 'Return %', render: (val, row) => val && row.exit_price ? fmtPct(((row.exit_price - val) / val) * 100) : '-' }
-    ];
-    const closedOptions = {
-      rowClass: row => row.realised_pnl_usd > 0 ? 'row-profit' : row.realised_pnl_usd < 0 ? 'row-loss' : '',
-      emptyMessage: 'Closed trade history will appear here once trades are completed.'
-    };
-    posClosedWrap.innerHTML = closedRows.length === 0
-      ? EmptyState('📭', 'No closed trades', 'Closed trade history will appear here once trades are completed.')
-      : DataTable(closedColumns, closedRows, closedOptions);
-  }
-  applyDashPosFilters();
-  
+  })();
 }
 
 function renderPositionDetail(root, ticker) { root.innerHTML = `<p style="padding:2rem;color:var(--color-text-muted)">Position: ${ticker}<\/p>`; }
@@ -1460,14 +1402,6 @@ async function init() {
     const path = (window.location.hash || '#/overview').replace('#','');
     updateActiveNav(path);
     handler(document.getElementById('appRoot'), param);
-    // Load Chart.js in background (non-blocking) and run any queued chart builds
-    loadScript('https://cdn.jsdelivr.net/npm/chart.js')
-      .then(() => loadScript('https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns'))
-      .then(() => {
-        (window._pendingCharts || []).forEach(fn => { try { fn(); } catch (e) { console.error(e); } });
-        window._pendingCharts = [];
-      })
-      .catch(err => console.warn('Chart.js failed to load:', err));
   } catch(e) {
     document.getElementById('loadingScreen').classList.add('hidden');
     const b = document.getElementById('errorBanner');
