@@ -16,16 +16,6 @@ CREDS_FILE = os.environ.get("GOOGLE_CREDENTIALS_FILE", "credentials.json")
 
 ACTION_ORDER = {"CLOSE": 0, "REDUCE": 1, "ADD": 2, "OPEN": 3}
 
-def sanitise(obj):
-    """Recursively replace float NaN/Inf with None for JSON safety."""
-    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
-        return None
-    if isinstance(obj, dict):
-        return {k: sanitise(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [sanitise(v) for v in obj]
-    return obj
-    
 def get_currency(trade_row_or_ticker, yf_ticker=None):
     # Called with (trade_row dict, yf_ticker) — new path
     if isinstance(trade_row_or_ticker, dict):
@@ -201,12 +191,17 @@ def get_risk_free_rate():
 def get_live_price(yf_ticker, manual_map):
     if yf_ticker in manual_map:
         return float(manual_map[yf_ticker])
-    try:
-        h = yf.Ticker(yf_ticker).history(period="2d")
-        if not h.empty:
-            return float(h["Close"].iloc[-1])
-    except:
-        pass
+
+    for period in ("2d", "1mo", "1y"):
+        try:
+            history = yf.Ticker(yf_ticker).history(period=period)
+            if history.empty or "Close" not in history:
+                continue
+            closes = pd.to_numeric(history["Close"], errors="coerce").dropna()
+            if not closes.empty:
+                return float(closes.iloc[-1])
+        except Exception:
+            pass
     return None
 
 def build_positions(trades, fx_rates, manual_map):
@@ -253,9 +248,10 @@ def build_positions(trades, fx_rates, manual_map):
                 currency    = e_currency
 
             elif action == "REDUCE":
+                reduce_qty = min(qty, qty_held)
                 avg        = cost_basis / qty_held if qty_held else price
-                cost_basis -= avg * qty
-                qty_held   -= qty
+                cost_basis -= avg * reduce_qty
+                qty_held   -= reduce_qty
 
                 fx           = fx_rates.get(fx_key(e_currency), 1.0)
                 # FIX 15: pence divide only for GBX; USD/GBP/EUR .L tickers use price as-is.
@@ -269,13 +265,13 @@ def build_positions(trades, fx_rates, manual_map):
                 avg_usd   = avg_base * fx
                 price_usd = price_base * fx
 
-                realised_usd  = (price_usd - avg_usd) * qty
-                cost_usd_sold = avg_usd * qty
+                realised_usd  = (price_usd - avg_usd) * reduce_qty
+                cost_usd_sold = avg_usd * reduce_qty
 
                 closed_trades.append({
                     "ticker":           ticker,
                     "name":             name,
-                    "qty":              qty,
+                    "qty":              reduce_qty,
                     "entry_price":      round(avg_base, 4),
                     "exit_price":       round(price_base, 4),
                     "realised_pnl_usd": round(realised_usd, 2),
@@ -718,7 +714,10 @@ def portfolio():
         total_mv   = sum(p["mv_usd"] for p in open_pos)
         total_cost = sum(p["cost_usd"] for p in open_pos)
 
-        proceeds_total = sum(t.get("realised_pnl_usd", 0) for t in closed)
+        proceeds_total = sum(
+            t.get("cost_usd_sold", 0) + t.get("realised_pnl_usd", 0)
+            for t in closed
+        )
         cash = cfg["starting_capital"] - total_cost + proceeds_total + total_income_usd
         cash = max(cash, 0)
         total_val = total_mv + cash
@@ -830,7 +829,7 @@ def portfolio():
             dividends_disp        = round(dividends_usd, 2)
            
 
-        return jsonify(sanitise({
+        return jsonify({
             "portfolio_name":           cfg["portfolio_name"],
             "inception_date":           cfg["inception_date"],
             "benchmark":                cfg["benchmark"],
@@ -856,7 +855,7 @@ def portfolio():
             "income_records":           income_records,
             "total_income_usd":         total_income_disp,
             "dividends_usd":            dividends_disp,
-        }))
+        })
     except Exception as e:
         import traceback
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
@@ -1151,6 +1150,16 @@ def asset_class_performance():
             ]
             if padding:
                 ac_series[ac] = padding + series
+        
+        def sanitise(obj):
+            """Recursively replace float NaN/Inf with None for JSON safety."""
+            if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+                return None
+            if isinstance(obj, dict):
+                return {k: sanitise(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [sanitise(v) for v in obj]
+            return obj
 
         active_classes = set(ac for ac, holdings in ac_holdings.items() if holdings)
         filtered_series = {ac: series for ac, series in ac_series.items()
