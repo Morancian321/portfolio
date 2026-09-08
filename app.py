@@ -1114,6 +1114,8 @@ def asset_class_performance():
                 
                 mv_before = max(pre_cf_mv.get(ac, 0.0), 0.0)
                 cf        = cf_net_by_ac.get(ac, 0.0)
+                if ac == "C&CE":
+                    cf += income_by_date_total.get(ds, 0.0) * usd_to_disp
 
                 is_first_day = (ac not in ac_mv_prev or ac_mv_prev.get(ac) == -1.0) and cf > 0
 
