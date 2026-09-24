@@ -729,10 +729,7 @@ def portfolio():
         total_mv   = sum(p["mv_usd"] for p in open_pos)
         total_cost = sum(p["cost_usd"] for p in open_pos)
 
-        proceeds_total = sum(
-            t.get("cost_usd_sold", 0) + t.get("realised_pnl_usd", 0)
-            for t in closed
-        )
+        proceeds_total = sum(t.get("realised_pnl_usd", 0) for t in closed)
         cash = cfg["starting_capital"] - total_cost + proceeds_total + total_income_usd
         cash = max(cash, 0)
         total_val = total_mv + cash
