@@ -729,7 +729,10 @@ def portfolio():
         total_mv   = sum(p["mv_usd"] for p in open_pos)
         total_cost = sum(p["cost_usd"] for p in open_pos)
 
-        proceeds_total = sum(t.get("realised_pnl_usd", 0) for t in closed)
+        proceeds_total = sum(
+            t.get("cost_usd_sold", 0) + t.get("realised_pnl_usd", 0)
+            for t in closed
+        )
         cash = cfg["starting_capital"] - total_cost + proceeds_total + total_income_usd
         cash = max(cash, 0)
         total_val = total_mv + cash
@@ -1109,8 +1112,7 @@ def asset_class_performance():
                 mv_post = _mv_for_ac(holdings, dt) if holdings else 0.0
                 if ac == "C&CE":
                     mv_post += hist_cash_disp.get(ds, 0.0)
-                elif ac in income_by_ac_date.get(ds, {}):
-                    mv_post += income_by_ac_date[ds][ac]
+                mv_post += income_by_ac_date.get(ds, {}).get(ac, 0.0)
                 
                 mv_before = max(pre_cf_mv.get(ac, 0.0), 0.0)
                 cf        = cf_net_by_ac.get(ac, 0.0)
